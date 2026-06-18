@@ -1,0 +1,14 @@
+node_modules
+dist
+.turbo
+.env
+.env.local
+*.log
+.env*.local
+prisma/generated
+*.tsbuildinfo
+coverage
+.DS_Store
+Thumbs.db
+.tmp.driveupload/
+1.env

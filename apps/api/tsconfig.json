@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "paths": {
+      "@erp/shared": ["../../packages/shared/src/index.ts"],
+      "@erp/shared/*": ["../../packages/shared/src/*"],
+      "@erp/database": ["../../packages/database/src/index.ts"],
+      "@erp/database/*": ["../../packages/database/src/*"]
+    }
+  },
+  "include": ["src"]
+}
