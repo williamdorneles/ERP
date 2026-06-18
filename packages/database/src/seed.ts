@@ -137,6 +137,20 @@ async function main() {
   }
 
   console.log(`✅ Plano de contas populado: ${planoContas.length} contas`)
+
+  const configuracoesDefault = [
+    { chave: 'METODO_CUSTO', valor: 'MEDIO', descricao: 'Método de custo usado no CMV e margens: MEDIO (Custo Médio Ponderado) ou ULTIMO (Último Custo)' },
+  ]
+
+  for (const cfg of configuracoesDefault) {
+    await prisma.configuracao.upsert({
+      where: { chave: cfg.chave },
+      update: {},
+      create: cfg,
+    })
+  }
+
+  console.log(`✅ Configurações padrão criadas: ${configuracoesDefault.length}`)
   console.log('✅ Seed concluído!')
 }
 

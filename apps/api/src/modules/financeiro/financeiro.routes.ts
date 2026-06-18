@@ -2,6 +2,9 @@ import type { FastifyInstance } from 'fastify'
 import { prisma } from '@erp/database'
 import {
   CriarContaBancariaSchema,
+  AtualizarContaBancariaSchema,
+  LancamentoManualSchema,
+  AjusteSaldoSchema,
   CriarContaFinanceiraSchema,
   AtualizarContaFinanceiraSchema,
   ClassificarTransacaoSchema,
@@ -11,28 +14,181 @@ import {
 } from '@erp/shared'
 import { requirePerfil } from '../../plugins/auth.plugin.js'
 import { parseOFX, normalizePayeeName } from './ofx.parser.js'
-import { classificarTransacaoSync } from './classificacao.engine.js'
+import { classificarTransacaoSync, buscarHistoricoClassificacao } from './classificacao.engine.js'
 
 export async function financeiroRoutes(app: FastifyInstance) {
   app.addHook('preHandler', requirePerfil('ADMIN', 'GERENTE', 'FINANCEIRO'))
 
   // ── Contas Bancárias ──────────────────────────────────────────
 
-  app.get('/contas-bancarias', async () =>
-    prisma.contaBancaria.findMany({ where: { ativo: true }, orderBy: { nome: 'asc' } })
-  )
+  app.get('/contas-bancarias', async (request) => {
+    const { mostrarInativas } = request.query as { mostrarInativas?: string }
+    const contas = await prisma.contaBancaria.findMany({
+      where: mostrarInativas === 'true' ? {} : { ativo: true },
+      orderBy: [{ isCaixa: 'desc' }, { nome: 'asc' }],
+    })
+
+    const saldos = await prisma.transacaoFinanceira.groupBy({
+      by: ['contaBancariaId', 'tipo'],
+      where: { contaBancariaId: { in: contas.map(c => c.id) } },
+      _sum: { valor: true },
+    })
+
+    return contas.map(conta => {
+      const creditos = saldos.filter(s => s.contaBancariaId === conta.id && s.tipo === 'CREDITO')
+        .reduce((acc, s) => acc + Number(s._sum.valor ?? 0), 0)
+      const debitos = saldos.filter(s => s.contaBancariaId === conta.id && s.tipo === 'DEBITO')
+        .reduce((acc, s) => acc + Number(s._sum.valor ?? 0), 0)
+      return { ...conta, saldoAtual: Number(conta.saldoInicial) + creditos - debitos }
+    })
+  })
 
   app.post('/contas-bancarias', async (request, reply) => {
     const data = CriarContaBancariaSchema.parse(request.body)
-    const cb = await prisma.contaBancaria.create({ data })
+    const cb = await prisma.contaBancaria.create({ data: data as never })
     return reply.code(201).send(cb)
+  })
+
+  app.put('/contas-bancarias/:id', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const data = AtualizarContaBancariaSchema.parse(request.body)
+    const cb = await prisma.contaBancaria.update({ where: { id }, data: data as never })
+    return cb
+  })
+
+  app.patch('/contas-bancarias/:id/toggle-ativo', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const atual = await prisma.contaBancaria.findUnique({ where: { id }, select: { ativo: true } })
+    if (!atual) return reply.code(404).send({ error: 'Conta não encontrada.' })
+    return prisma.contaBancaria.update({ where: { id }, data: { ativo: !atual.ativo } })
+  })
+
+  // ── Extrato ───────────────────────────────────────────────────
+
+  app.get('/contas-bancarias/:id/extrato', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const { dataInicio, dataFim, pagina, limite } = request.query as {
+      dataInicio?: string; dataFim?: string; pagina?: string; limite?: string
+    }
+
+    const conta = await prisma.contaBancaria.findUnique({ where: { id } })
+    if (!conta) return reply.code(404).send({ error: 'Conta não encontrada.' })
+
+    const page = Number(pagina ?? 1)
+    const lim = Math.min(Number(limite ?? 50), 200)
+
+    const where: Record<string, unknown> = { contaBancariaId: id }
+    if (dataInicio || dataFim) {
+      where.data = {
+        ...(dataInicio && { gte: new Date(dataInicio) }),
+        ...(dataFim && { lte: new Date(dataFim) }),
+      }
+    }
+
+    const [lancamentos, total] = await Promise.all([
+      prisma.transacaoFinanceira.findMany({
+        where,
+        include: { contaFinanceira: { select: { id: true, codigo: true, nome: true } } },
+        orderBy: [{ data: 'desc' }, { criadoEm: 'desc' }],
+        skip: (page - 1) * lim,
+        take: lim,
+      }),
+      prisma.transacaoFinanceira.count({ where }),
+    ])
+
+    // Saldo até a data de início (exclusive) para calcular saldo corrente
+    const saldoAntes = dataInicio
+      ? await prisma.transacaoFinanceira.groupBy({
+          by: ['tipo'],
+          where: { contaBancariaId: id, data: { lt: new Date(dataInicio) } },
+          _sum: { valor: true },
+        }).then(grupos => {
+          const cred = grupos.find(g => g.tipo === 'CREDITO')?._sum.valor ?? 0
+          const deb = grupos.find(g => g.tipo === 'DEBITO')?._sum.valor ?? 0
+          return Number(conta.saldoInicial) + Number(cred) - Number(deb)
+        })
+      : Number(conta.saldoInicial)
+
+    return { conta: { ...conta, saldoAntes }, lancamentos, total, pagina: page, limite: lim, paginas: Math.ceil(total / lim) }
+  })
+
+  // ── Lançamento Manual ─────────────────────────────────────────
+
+  app.post('/contas-bancarias/:id/lancamento', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const { tipo, valor, data, descricao, contaFinanceiraId } = LancamentoManualSchema.parse(request.body)
+
+    const conta = await prisma.contaBancaria.findUnique({ where: { id } })
+    if (!conta) return reply.code(404).send({ error: 'Conta não encontrada.' })
+
+    const lancamento = await prisma.transacaoFinanceira.create({
+      data: {
+        contaBancariaId: id,
+        fitid: `MANUAL-${crypto.randomUUID()}`,
+        data: new Date(data),
+        valor,
+        tipo,
+        descricao,
+        nomeOriginal: descricao,
+        contaFinanceiraId: contaFinanceiraId ?? null,
+        fonteClassificacao: 'MANUAL',
+        confiancaClassificacao: 1,
+        status: 'REVISADO',
+      },
+    })
+    return reply.code(201).send(lancamento)
+  })
+
+  // ── Ajuste de Saldo ───────────────────────────────────────────
+
+  app.post('/contas-bancarias/:id/ajuste-saldo', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const { saldoDesejado, data, descricao } = AjusteSaldoSchema.parse(request.body)
+
+    const conta = await prisma.contaBancaria.findUnique({ where: { id } })
+    if (!conta) return reply.code(404).send({ error: 'Conta não encontrada.' })
+
+    // Calcula saldo atual
+    const grupos = await prisma.transacaoFinanceira.groupBy({
+      by: ['tipo'],
+      where: { contaBancariaId: id },
+      _sum: { valor: true },
+    })
+    const cred = grupos.find(g => g.tipo === 'CREDITO')?._sum.valor ?? 0
+    const deb = grupos.find(g => g.tipo === 'DEBITO')?._sum.valor ?? 0
+    const saldoAtual = Number(conta.saldoInicial) + Number(cred) - Number(deb)
+    const diferenca = saldoDesejado - saldoAtual
+
+    if (Math.abs(diferenca) < 0.01) {
+      return reply.code(400).send({ error: 'Saldo já está correto. Nenhum ajuste necessário.' })
+    }
+
+    const ajuste = await prisma.transacaoFinanceira.create({
+      data: {
+        contaBancariaId: id,
+        fitid: `AJUSTE-${crypto.randomUUID()}`,
+        data: new Date(data),
+        valor: Math.abs(diferenca),
+        tipo: diferenca > 0 ? 'CREDITO' : 'DEBITO',
+        descricao: descricao ?? 'Ajuste de saldo',
+        nomeOriginal: descricao ?? 'Ajuste de saldo',
+        fonteClassificacao: 'MANUAL',
+        confiancaClassificacao: 1,
+        status: 'REVISADO',
+      },
+    })
+    return reply.code(201).send({ ajuste, saldoAnterior: saldoAtual, saldoNovo: saldoDesejado, diferenca })
   })
 
   // ── Plano de Contas ───────────────────────────────────────────
 
-  app.get('/contas', async () =>
-    prisma.contaFinanceira.findMany({ where: { ativo: true }, orderBy: { codigoCompleto: 'asc' } })
-  )
+  app.get('/contas', async (request) => {
+    const { mostrarInativas } = request.query as { mostrarInativas?: string }
+    return prisma.contaFinanceira.findMany({
+      where: mostrarInativas === 'true' ? {} : { ativo: true },
+      orderBy: { codigoCompleto: 'asc' },
+    })
+  })
 
   app.get('/contas/arvore', async () => {
     const contas = await prisma.contaFinanceira.findMany({
@@ -73,7 +229,23 @@ export async function financeiroRoutes(app: FastifyInstance) {
 
   app.delete('/contas/:id', async (request, reply) => {
     const { id } = request.params as { id: string }
+    const temLancamentos = await prisma.transacaoFinanceira.count({ where: { contaFinanceiraId: id } })
+    if (temLancamentos > 0) {
+      return reply.code(409).send({ error: `Conta possui ${temLancamentos} lançamento(s) vinculado(s) e não pode ser inativada.` })
+    }
+    const temSubcontas = await prisma.contaFinanceira.count({ where: { contaPaiId: id, ativo: true } })
+    if (temSubcontas > 0) {
+      return reply.code(409).send({ error: 'Conta possui subcontas ativas. Inative-as primeiro.' })
+    }
     await prisma.contaFinanceira.update({ where: { id }, data: { ativo: false } })
+    return reply.send({ ok: true })
+  })
+
+  app.patch('/contas/:id/reativar', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const conta = await prisma.contaFinanceira.findUnique({ where: { id } })
+    if (!conta) return reply.code(404).send({ error: 'Conta não encontrada.' })
+    await prisma.contaFinanceira.update({ where: { id }, data: { ativo: true } })
     return reply.send({ ok: true })
   })
 
@@ -135,15 +307,31 @@ export async function financeiroRoutes(app: FastifyInstance) {
       const duplicadas = extrato.transactions.length - novasTxs.length
       let classificadas = 0
 
-      // Classifica todas em memória (sem tocar no banco por transação)
+      // 1ª passagem: classificação por regras (síncrona, em memória)
       const matchesPorRegra = new Map<string, number>()
-      const rows = novasTxs.map(tx => {
+      const primeiraPassagem = novasTxs.map(tx => {
         const classif = classificarTransacaoSync(tx, regras)
-        const status: 'PENDENTE' | 'SUGERIDO' = classif ? 'SUGERIDO' : 'PENDENTE'
-        if (classif) {
-          classificadas++
+        if (classif?.fonte === 'REGRA') {
           matchesPorRegra.set(classif.regraId, (matchesPorRegra.get(classif.regraId) ?? 0) + 1)
         }
+        return { tx, classif }
+      })
+
+      // 2ª passagem: histórico para as que as regras não cobriram
+      const nomesParaHistorico = [...new Set(
+        primeiraPassagem
+          .filter(p => !p.classif && p.tx.name)
+          .map(p => p.tx.name!),
+      )]
+      const historico = await buscarHistoricoClassificacao(nomesParaHistorico)
+
+      const rows = primeiraPassagem.map(({ tx, classif }) => {
+        let classificacaoFinal = classif
+        if (!classificacaoFinal && tx.name) {
+          const hist = historico.get(tx.name.toLowerCase().trim())
+          if (hist) classificacaoFinal = { fonte: 'HISTORICO', ...hist }
+        }
+        if (classificacaoFinal) classificadas++
         return {
           contaBancariaId,
           fitid: tx.fitid,
@@ -153,10 +341,10 @@ export async function financeiroRoutes(app: FastifyInstance) {
           descricao: normalizePayeeName(tx.name || tx.memo || '') || tx.memo || tx.name || '',
           nomeOriginal: tx.name,
           memoOriginal: tx.memo,
-          contaFinanceiraId: classif?.contaFinanceiraId ?? null,
-          fonteClassificacao: classif?.fonte ?? null,
-          confiancaClassificacao: classif?.confianca ?? null,
-          status,
+          contaFinanceiraId: classificacaoFinal?.contaFinanceiraId ?? null,
+          fonteClassificacao: classificacaoFinal?.fonte ?? null,
+          confiancaClassificacao: classificacaoFinal?.confianca ?? null,
+          status: classificacaoFinal ? 'SUGERIDO' : 'PENDENTE',
         }
       })
 
@@ -275,6 +463,68 @@ export async function financeiroRoutes(app: FastifyInstance) {
       data: { status: 'REVISADO' },
     })
     return { atualizados: count }
+  })
+
+  // Re-classifica todas as transações PENDENTE usando regras + histórico
+  app.post('/transacoes/reclassificar-pendentes', async () => {
+    const pendentes = await prisma.transacaoFinanceira.findMany({
+      where: { status: 'PENDENTE' },
+      select: { id: true, nomeOriginal: true, memoOriginal: true, valor: true, tipo: true },
+    })
+
+    if (pendentes.length === 0) return { reclassificadas: 0 }
+
+    const regras = await prisma.regraClassificacao.findMany({
+      where: { ativo: true },
+      orderBy: { prioridade: 'asc' },
+    })
+
+    // 1ª passagem: regras
+    type Pendente = typeof pendentes[number]
+    const semRegra: Pendente[] = []
+    const atualizacoesRegra: { id: string; contaFinanceiraId: string; fonte: string; confianca: number }[] = []
+
+    for (const tx of pendentes) {
+      const classif = classificarTransacaoSync(
+        { name: tx.nomeOriginal ?? '', memo: tx.memoOriginal ?? '', amount: Number(tx.valor), type: tx.tipo === 'CREDITO' ? 'CREDIT' : 'DEBIT' },
+        regras,
+      )
+      if (classif) {
+        atualizacoesRegra.push({ id: tx.id, contaFinanceiraId: classif.contaFinanceiraId, fonte: classif.fonte, confianca: classif.confianca })
+      } else {
+        semRegra.push(tx)
+      }
+    }
+
+    // 2ª passagem: histórico para as restantes
+    const nomesParaHistorico = [...new Set(semRegra.map(t => t.nomeOriginal).filter(Boolean) as string[])]
+    const historico = await buscarHistoricoClassificacao(nomesParaHistorico)
+
+    const atualizacoesHistorico: { id: string; contaFinanceiraId: string; fonte: string; confianca: number }[] = []
+    for (const tx of semRegra) {
+      if (!tx.nomeOriginal) continue
+      const hist = historico.get(tx.nomeOriginal.toLowerCase().trim())
+      if (hist) atualizacoesHistorico.push({ id: tx.id, contaFinanceiraId: hist.contaFinanceiraId, fonte: 'HISTORICO', confianca: hist.confianca })
+    }
+
+    const todasAtualizacoes = [...atualizacoesRegra, ...atualizacoesHistorico]
+    if (todasAtualizacoes.length === 0) return { reclassificadas: 0 }
+
+    // Atualiza em paralelo (lote de promises individuais — createMany não suporta update)
+    await Promise.all(
+      todasAtualizacoes.map(u =>
+        prisma.transacaoFinanceira.update({
+          where: { id: u.id },
+          data: { contaFinanceiraId: u.contaFinanceiraId, fonteClassificacao: u.fonte, confiancaClassificacao: u.confianca, status: 'SUGERIDO' },
+        })
+      )
+    )
+
+    return {
+      reclassificadas: todasAtualizacoes.length,
+      porRegra: atualizacoesRegra.length,
+      porHistorico: atualizacoesHistorico.length,
+    }
   })
 
   // ── Regras de Classificação ───────────────────────────────────

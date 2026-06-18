@@ -3,7 +3,7 @@ import { prisma } from '@erp/database'
 import { requirePerfil } from '../../plugins/auth.plugin.js'
 
 export async function pessoasRoutes(app: FastifyInstance) {
-  app.addHook('preHandler', requirePerfil('ADMIN', 'GERENTE', 'VENDAS'))
+  app.addHook('preHandler', requirePerfil('ADMIN', 'GERENTE', 'VENDAS', 'FINANCEIRO', 'ESTOQUE'))
 
   app.get('/', async (request) => {
     const { busca, tipo, mostrarInativos } = request.query as {

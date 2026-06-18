@@ -20,6 +20,10 @@ import { producaoRoutes } from './modules/producao/producao.routes.js'
 import { vendasRoutes } from './modules/vendas/vendas.routes.js'
 import { fiscalRoutes } from './modules/fiscal/fiscal.routes.js'
 import { financeiroRoutes } from './modules/financeiro/financeiro.routes.js'
+import { titulosRoutes } from './modules/financeiro/titulos.routes.js'
+import { conciliacaoRoutes } from './modules/financeiro/conciliacao.routes.js'
+import { nfEntradaRoutes } from './modules/nf-entrada/nf-entrada.routes.js'
+import { configuracoesRoutes } from './modules/configuracoes/configuracoes.routes.js'
 
 const EnvSchema = z.object({
   DATABASE_URL: z.string().min(1, 'DATABASE_URL é obrigatória'),
@@ -80,6 +84,10 @@ await app.register(producaoRoutes, { prefix: '/api/producao' })
 await app.register(vendasRoutes, { prefix: '/api/vendas' })
 await app.register(fiscalRoutes, { prefix: '/api/fiscal' })
 await app.register(financeiroRoutes, { prefix: '/api/financeiro' })
+await app.register(titulosRoutes, { prefix: '/api/titulos' })
+await app.register(conciliacaoRoutes, { prefix: '/api/conciliacao' })
+await app.register(nfEntradaRoutes, { prefix: '/api/nf-entrada' })
+await app.register(configuracoesRoutes, { prefix: '/api/configuracoes' })
 
 app.get('/health', () => ({ status: 'ok', timestamp: new Date().toISOString() }))
 

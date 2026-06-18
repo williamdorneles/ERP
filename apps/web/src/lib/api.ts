@@ -30,6 +30,9 @@ api.interceptors.response.use(
     // Só tenta refresh em 401 de rotas protegidas (não do próprio refresh/login)
     const isAuthEndpoint = original?.url?.includes('/auth/refresh') || original?.url?.includes('/auth/login')
     if (err.response?.status !== 401 || original?._retry || isAuthEndpoint) {
+      // Extrai a mensagem específica do corpo da resposta da API
+      const apiMessage = err.response?.data?.error ?? err.response?.data?.message
+      if (apiMessage) err.message = apiMessage
       return Promise.reject(err)
     }
 

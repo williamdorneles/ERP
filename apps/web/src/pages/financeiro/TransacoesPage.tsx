@@ -195,6 +195,19 @@ export function TransacoesPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['transacoes'] }),
   })
 
+  const reclassificarMutation = useMutation({
+    mutationFn: () => api.post('/financeiro/transacoes/reclassificar-pendentes'),
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ['transacoes'] })
+      const d = res.data as { reclassificadas: number; porRegra: number; porHistorico: number }
+      if (d.reclassificadas === 0) {
+        alert('Nenhuma transação pendente encontrada ou sem histórico suficiente.')
+      } else {
+        alert(`${d.reclassificadas} transação(ões) reclassificada(s): ${d.porRegra} por regra, ${d.porHistorico} por histórico.`)
+      }
+    },
+  })
+
   const transacoes = data?.dados ?? []
   const sugestoes = transacoes.filter(t => t.status === 'SUGERIDO')
 
@@ -221,16 +234,26 @@ export function TransacoesPage() {
             {data ? `${data.total} transações encontradas` : 'Carregando...'}
           </p>
         </div>
-        {sugestoes.length > 0 && (
+        <div className="flex items-center gap-2">
           <Button
             variant="secondary"
-            loading={aprovarLoteMutation.isPending}
-            onClick={() => aprovarLoteMutation.mutate(sugestoes.map(t => t.id))}
+            loading={reclassificarMutation.isPending}
+            onClick={() => reclassificarMutation.mutate()}
+            title="Re-processa todas as transações PENDENTE usando regras e histórico de classificações manuais"
           >
-            <CheckCircle size={16} className="text-green-500" />
-            Aprovar {sugestoes.length} sugestão{sugestoes.length > 1 ? 'ões' : ''}
+            Reclassificar pendentes
           </Button>
-        )}
+          {sugestoes.length > 0 && (
+            <Button
+              variant="secondary"
+              loading={aprovarLoteMutation.isPending}
+              onClick={() => aprovarLoteMutation.mutate(sugestoes.map(t => t.id))}
+            >
+              <CheckCircle size={16} className="text-green-500" />
+              Aprovar {sugestoes.length} sugestão{sugestoes.length > 1 ? 'ões' : ''}
+            </Button>
+          )}
+        </div>
       </div>
 
       {/* Filtros */}

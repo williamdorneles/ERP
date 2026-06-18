@@ -5,7 +5,30 @@ export const CriarContaBancariaSchema = z.object({
   banco: z.string().max(50).optional(),
   agencia: z.string().max(10).optional(),
   conta: z.string().max(20).optional(),
+  isCaixa: z.boolean().default(false),
+  saldoInicial: z.number().default(0),
 })
+
+export const AtualizarContaBancariaSchema = CriarContaBancariaSchema.partial()
+
+export const LancamentoManualSchema = z.object({
+  tipo: z.enum(['DEBITO', 'CREDITO']),
+  valor: z.number().positive('Valor deve ser positivo'),
+  data: z.string().min(1, 'Data obrigatória'),
+  descricao: z.string().min(1).max(200),
+  contaFinanceiraId: z.string().uuid().optional(),
+})
+
+export const AjusteSaldoSchema = z.object({
+  saldoDesejado: z.number(),
+  data: z.string().min(1, 'Data obrigatória'),
+  descricao: z.string().max(200).optional(),
+})
+
+export type CriarContaBancariaInput = z.infer<typeof CriarContaBancariaSchema>
+export type AtualizarContaBancariaInput = z.infer<typeof AtualizarContaBancariaSchema>
+export type LancamentoManualInput = z.infer<typeof LancamentoManualSchema>
+export type AjusteSaldoInput = z.infer<typeof AjusteSaldoSchema>
 
 export const CriarContaFinanceiraSchema = z.object({
   codigo: z.string().min(1).max(20),
@@ -42,7 +65,6 @@ export const CriarRegraClassificacaoSchema = z.object({
 
 export const AtualizarRegraClassificacaoSchema = CriarRegraClassificacaoSchema.partial()
 
-export type CriarContaBancariaInput = z.infer<typeof CriarContaBancariaSchema>
 export type CriarContaFinanceiraInput = z.infer<typeof CriarContaFinanceiraSchema>
 export type ClassificarTransacaoInput = z.infer<typeof ClassificarTransacaoSchema>
 export type AprovarLoteInput = z.infer<typeof AprovarLoteSchema>

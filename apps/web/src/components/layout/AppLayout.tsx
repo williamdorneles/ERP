@@ -3,7 +3,7 @@ import { useState } from 'react'
 import {
   LayoutDashboard, Package, ArrowLeftRight,
   ChefHat, ShoppingCart, Users, LogOut, Menu, X, ChevronDown,
-  AlertTriangle, Receipt, BookOpen, DollarSign,
+  AlertTriangle, Receipt, BookOpen, DollarSign, Settings,
 } from 'lucide-react'
 import { useAuthStore } from '../../store/auth'
 import clsx from 'clsx'
@@ -23,9 +23,18 @@ const navItems: NavItem[] = [
     children: [
       { label: 'Produtos & Insumos', href: '/cadastros/produtos' },
       { label: 'Clientes & Fornecedores', href: '/cadastros/pessoas' },
+      { label: 'Plano de Contas', href: '/financeiro/contas' },
+      { label: 'Contas Bancárias', href: '/financeiro/contas-bancarias' },
     ],
   },
-  { label: 'Estoque', icon: <Package size={18} />, href: '/estoque/posicao' },
+  {
+    label: 'Estoque',
+    icon: <Package size={18} />,
+    children: [
+      { label: 'Posição de Estoque', href: '/estoque/posicao' },
+      { label: 'NF de Entrada', href: '/estoque/nf-entrada' },
+    ],
+  },
   {
     label: 'Produção',
     icon: <ChefHat size={18} />,
@@ -46,20 +55,21 @@ const navItems: NavItem[] = [
     icon: <Receipt size={18} />,
     children: [
       { label: 'NF-e / NFC-e', href: '/fiscal/nfe' },
-      { label: 'Configuração', href: '/fiscal/config' },
     ],
   },
   {
     label: 'Financeiro',
     icon: <DollarSign size={18} />,
     children: [
-      { label: 'Plano de Contas', href: '/financeiro/contas' },
+      { label: 'Contas a Pagar/Receber', href: '/financeiro/titulos' },
+      { label: 'Conciliação Bancária', href: '/financeiro/conciliacao' },
       { label: 'Importar OFX', href: '/financeiro/importar' },
       { label: 'Transações', href: '/financeiro/transacoes' },
       { label: 'Regras', href: '/financeiro/regras' },
       { label: 'DRE', href: '/financeiro/dre' },
     ],
   },
+  { label: 'Configurações', icon: <Settings size={18} />, href: '/configuracoes' },
 ]
 
 function NavGroup({ item }: { item: NavItem }) {

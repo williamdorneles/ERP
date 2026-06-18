@@ -134,7 +134,7 @@ describe('classificarTransacaoSync — prioridade e retorno', () => {
     const r2 = regra({ id: 'r2', prioridade: 2, tipoCorrespondencia: 'CONTEM', valorCorrespondencia: 'AGUA', contaFinanceiraId: 'conta-outros' })
     const result = classificarTransacaoSync(tx('CONTA AGUA'), [r1, r2])
     expect(result?.contaFinanceiraId).toBe('conta-agua')
-    expect(result?.regraId).toBe('r1')
+    expect(result?.fonte === 'REGRA' && result.regraId).toBe('r1')
   })
 
   it('retorna null quando lista de regras está vazia', () => {

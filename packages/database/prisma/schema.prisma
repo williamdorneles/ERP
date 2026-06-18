@@ -8,6 +8,19 @@ datasource db {
 }
 
 // ─────────────────────────────────────────
+// CONFIGURAÇÕES DO SISTEMA
+// ─────────────────────────────────────────
+
+model Configuracao {
+  chave        String   @id
+  valor        String
+  descricao    String?
+  atualizadoEm DateTime @updatedAt
+
+  @@map("configuracoes")
+}
+
+// ─────────────────────────────────────────
 // AUTENTICAÇÃO
 // ─────────────────────────────────────────
 
@@ -102,6 +115,8 @@ model Produto {
   estoqueAtual     Decimal     @default(0) @db.Decimal(12, 3)
   estoqueMinimo    Decimal     @default(0) @db.Decimal(12, 3)
   custoUnitario    Decimal     @default(0) @db.Decimal(12, 4)
+  custoMedio       Decimal     @default(0) @db.Decimal(12, 4)
+  ultimoCusto      Decimal     @default(0) @db.Decimal(12, 4)
   // Venda (aplicável a PRODUTO_ACABADO e INSUMO_PRODUTO)
   precoVenda       Decimal?    @db.Decimal(12, 2)
   // Fiscal (para NF-e)
@@ -125,6 +140,7 @@ model Produto {
   ingredientesFicha IngredienteFicha[]
   itensPedidoCompra ItemPedidoCompra[]
   itensPedidoVenda  ItemPedidoVenda[]
+  itensNfEntrada    ItemNfEntrada[]
 
   @@map("produtos")
 }
@@ -140,8 +156,10 @@ model MovimentacaoEstoque {
   id              String           @id @default(uuid())
   produtoId       String
   apontamentoId   String?
+  nfEntradaId     String?
   tipo            TipoMovimentacao
   quantidade      Decimal          @db.Decimal(12, 3)
+  custoUnitario   Decimal?         @db.Decimal(12, 4)
   lote            String?
   dataVencimento  DateTime?
   observacao      String?
@@ -149,6 +167,7 @@ model MovimentacaoEstoque {
 
   produto      Produto              @relation(fields: [produtoId], references: [id])
   apontamento  ApontamentoProducao? @relation(fields: [apontamentoId], references: [id])
+  nfEntrada    NfEntrada?           @relation(fields: [nfEntradaId], references: [id])
 
   @@index([produtoId])
   @@index([tipo, criadoEm])
@@ -293,6 +312,8 @@ model Pessoa {
 
   pedidosVenda  PedidoVenda[]
   pedidosCompra PedidoCompra[]
+  titulos       TituloFinanceiro[]
+  nfEntradas    NfEntrada[]       @relation("NfEntradaFornecedor")
 
   @@map("pessoas")
 }
@@ -343,6 +364,7 @@ model PedidoVenda {
   vendedor     Usuario?          @relation(fields: [vendedorId], references: [id])
   itens        ItemPedidoVenda[]
   notasFiscais NotaFiscal[]
+  titulos      TituloFinanceiro[]
 
   @@index([status, criadoEm])
   @@index([canal])
@@ -631,6 +653,7 @@ model ContaFinanceira {
   subcontas ContaFinanceira[] @relation("ContaHierarquia")
   transacoes TransacaoFinanceira[]
   regras     RegraClassificacao[]
+  titulos    TituloFinanceiro[]
 
   @@map("contas_financeiras")
 }
@@ -643,12 +666,15 @@ model ContaBancaria {
   conta        String?
   ofxBancoId   String?
   ofxContaId   String?
+  isCaixa      Boolean  @default(false)
+  saldoInicial Decimal  @default(0) @db.Decimal(15, 2)
   ativo        Boolean  @default(true)
   criadoEm     DateTime @default(now())
   atualizadoEm DateTime @updatedAt
 
   transacoes  TransacaoFinanceira[]
   importacoes ImportacaoOFX[]
+  parcelas    ParcelaFinanceira[]
 
   @@map("contas_bancarias")
 }
@@ -682,10 +708,14 @@ model TransacaoFinanceira {
   criadoEm               DateTime        @default(now())
   atualizadoEm           DateTime        @updatedAt
 
-  contaBancaria   ContaBancaria    @relation(fields: [contaBancariaId], references: [id])
-  contaFinanceira ContaFinanceira? @relation(fields: [contaFinanceiraId], references: [id])
+  parcelaFinanceiraId    String?
+
+  contaBancaria   ContaBancaria     @relation(fields: [contaBancariaId], references: [id])
+  contaFinanceira ContaFinanceira?  @relation(fields: [contaFinanceiraId], references: [id])
+  parcelaFinanceira ParcelaFinanceira? @relation("ConciliacaoTransacao", fields: [parcelaFinanceiraId], references: [id])
 
   @@unique([fitid, contaBancariaId])
+  @@index([parcelaFinanceiraId])
   @@index([data, contaBancariaId])
   @@index([status])
   @@index([contaFinanceiraId, data])
@@ -757,4 +787,133 @@ model RegraClassificacao {
   contaFinanceira ContaFinanceira @relation(fields: [contaFinanceiraId], references: [id])
 
   @@map("regras_classificacao")
+}
+
+// ─────────────────────────────────────────
+// CONTAS A PAGAR / RECEBER
+// ─────────────────────────────────────────
+
+// ─────────────────────────────────────────
+// NF DE ENTRADA
+// ─────────────────────────────────────────
+
+enum StatusNfEntrada {
+  RASCUNHO
+  CONFIRMADA
+  CANCELADA
+}
+
+model NfEntrada {
+  id              String          @id @default(uuid())
+  chaveAcesso     String?         @unique @db.VarChar(44)
+  numero          String?
+  serie           String?
+  dataEmissao     DateTime        @db.Date
+  dataEntrada     DateTime        @db.Date
+  fornecedorId    String?
+  fornecedorNome  String
+  fornecedorCnpj  String?
+  totalProdutos   Decimal         @db.Decimal(15, 2)
+  totalImpostos   Decimal         @default(0) @db.Decimal(15, 2)
+  totalNf         Decimal         @db.Decimal(15, 2)
+  status          StatusNfEntrada @default(RASCUNHO)
+  observacao      String?
+  xmlOriginal     String?         @db.Text
+  criadoEm       DateTime        @default(now())
+  atualizadoEm   DateTime        @updatedAt
+
+  fornecedor    Pessoa?             @relation("NfEntradaFornecedor", fields: [fornecedorId], references: [id])
+  itens         ItemNfEntrada[]
+  movimentacoes MovimentacaoEstoque[]
+  titulos       TituloFinanceiro[]
+
+  @@index([dataEntrada])
+  @@index([fornecedorId])
+  @@map("nf_entradas")
+}
+
+model ItemNfEntrada {
+  id            String   @id @default(uuid())
+  nfEntradaId   String
+  nItem         Int
+  descricao     String
+  ncm           String?
+  cfop          String?
+  unidade       String?
+  quantidade    Decimal  @db.Decimal(12, 3)
+  valorUnitario Decimal  @db.Decimal(15, 4)
+  valorTotal    Decimal  @db.Decimal(15, 2)
+  produtoId     String?
+
+  nfEntrada NfEntrada @relation(fields: [nfEntradaId], references: [id], onDelete: Cascade)
+  produto   Produto?  @relation(fields: [produtoId], references: [id])
+
+  @@index([nfEntradaId])
+  @@map("itens_nf_entrada")
+}
+
+enum TipoTitulo {
+  PAGAR
+  RECEBER
+}
+
+enum StatusTitulo {
+  ABERTO
+  PARCIAL
+  QUITADO
+  CANCELADO
+}
+
+enum StatusParcela {
+  ABERTO
+  QUITADO
+  CANCELADO
+}
+
+model TituloFinanceiro {
+  id                String       @id @default(uuid())
+  tipo              TipoTitulo
+  descricao         String
+  total             Decimal      @db.Decimal(15, 2)
+  status            StatusTitulo @default(ABERTO)
+  pessoaId          String?
+  pedidoVendaId     String?
+  nfEntradaId       String?
+  contaFinanceiraId String?
+  observacao        String?
+  criadoEm         DateTime     @default(now())
+  atualizadoEm     DateTime     @updatedAt
+
+  pessoa          Pessoa?           @relation(fields: [pessoaId], references: [id])
+  pedidoVenda     PedidoVenda?      @relation(fields: [pedidoVendaId], references: [id])
+  nfEntrada       NfEntrada?        @relation(fields: [nfEntradaId], references: [id])
+  contaFinanceira ContaFinanceira?  @relation(fields: [contaFinanceiraId], references: [id])
+  parcelas        ParcelaFinanceira[]
+
+  @@index([tipo, status])
+  @@index([pessoaId])
+  @@map("titulos_financeiros")
+}
+
+model ParcelaFinanceira {
+  id              String        @id @default(uuid())
+  tituloId        String
+  numero          Int
+  valor           Decimal       @db.Decimal(15, 2)
+  vencimento      DateTime      @db.Date
+  status          StatusParcela @default(ABERTO)
+  dataBaixa       DateTime?     @db.Date
+  valorPago       Decimal?      @db.Decimal(15, 2)
+  contaBancariaId String?
+  observacao      String?
+  criadoEm       DateTime      @default(now())
+  atualizadoEm   DateTime      @updatedAt
+
+  titulo        TituloFinanceiro      @relation(fields: [tituloId], references: [id])
+  contaBancaria ContaBancaria?        @relation(fields: [contaBancariaId], references: [id])
+  transacoesConciliadas TransacaoFinanceira[] @relation("ConciliacaoTransacao")
+
+  @@index([tituloId])
+  @@index([vencimento, status])
+  @@map("parcelas_financeiras")
 }
