@@ -118,12 +118,14 @@ export function FichasTecnicasPage() {
           {fichas.map(ficha => {
             const custo = calcularCusto(ficha)
             return (
-              <div key={ficha.id} className={clsx(
-                'bg-white rounded-xl border p-5 transition',
-                ficha.ativo
-                  ? 'border-gray-200 hover:border-primary-300 hover:shadow-sm'
-                  : 'border-gray-200 opacity-60',
-              )}>
+              <div key={ficha.id}
+                onClick={() => abrirEdicao(ficha)}
+                className={clsx(
+                  'bg-white rounded-xl border p-5 transition cursor-pointer',
+                  ficha.ativo
+                    ? 'border-gray-200 hover:border-primary-300 hover:shadow-sm'
+                    : 'border-gray-200 opacity-60',
+                )}>
                 <div className="flex items-start justify-between mb-3">
                   <div>
                     <span className={clsx('text-xs px-2 py-0.5 rounded-full font-medium', categoriaCor[ficha.categoria])}>
@@ -143,7 +145,7 @@ export function FichasTecnicasPage() {
                       <Pencil size={15} />
                     </button>
                     <button
-                      onClick={() => setConfirmToggle(ficha)}
+                      onClick={e => { e.stopPropagation(); setConfirmToggle(ficha) }}
                       title={ficha.ativo ? 'Desativar' : 'Reativar'}
                       className={clsx(
                         'p-1.5 rounded-lg transition',

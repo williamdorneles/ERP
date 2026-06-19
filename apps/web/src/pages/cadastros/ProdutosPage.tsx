@@ -501,10 +501,12 @@ export function ProdutosPage() {
                   && Number(p.estoqueAtual) <= Number(p.estoqueMinimo)
 
                 return (
-                  <tr key={p.id} className={clsx(
-                    'hover:bg-gray-50 transition',
-                    !p.ativo && 'opacity-50',
-                  )}>
+                  <tr key={p.id}
+                    onClick={() => { setEditando(p); setPanelOpen(true) }}
+                    className={clsx(
+                      'hover:bg-gray-50 cursor-pointer transition',
+                      !p.ativo && 'opacity-50',
+                    )}>
                     <td className="px-4 py-3 font-mono text-xs text-gray-500">{p.codigo}</td>
                     <td className="px-4 py-3 font-medium text-gray-900">
                       {p.nome}

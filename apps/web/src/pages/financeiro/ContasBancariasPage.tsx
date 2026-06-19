@@ -210,7 +210,9 @@ export function ContasBancariasPage() {
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {contas.map(conta => (
-            <div key={conta.id} className={clsx('bg-white rounded-xl border border-gray-200 p-5 space-y-4', !conta.ativo && 'opacity-60')}>
+            <div key={conta.id}
+              onClick={() => { setEditando(conta); setShowForm(true) }}
+              className={clsx('bg-white rounded-xl border border-gray-200 p-5 space-y-4 cursor-pointer hover:border-primary-300 hover:shadow-sm transition', !conta.ativo && 'opacity-60')}>
               <div className="flex items-start justify-between">
                 <div className="flex items-center gap-3">
                   <div className={clsx('w-10 h-10 rounded-xl flex items-center justify-center', conta.isCaixa ? 'bg-amber-100' : 'bg-blue-100')}>
@@ -233,20 +235,20 @@ export function ContasBancariasPage() {
 
               <div className="flex items-center gap-2 pt-1 border-t border-gray-100">
                 <button
-                  onClick={() => navigate(`/financeiro/extrato/${conta.id}`)}
+                  onClick={e => { e.stopPropagation(); navigate(`/financeiro/extrato/${conta.id}`) }}
                   className="flex-1 flex items-center justify-center gap-1.5 py-1.5 text-xs text-primary-600 hover:text-primary-700 font-medium transition"
                 >
                   <ExternalLink size={13} /> Ver Extrato
                 </button>
                 <button
-                  onClick={() => { setEditando(conta); setShowForm(true) }}
+                  onClick={e => { e.stopPropagation(); setEditando(conta); setShowForm(true) }}
                   className="p-1.5 text-gray-400 hover:text-primary-600 rounded transition"
                   title="Editar"
                 >
                   <Pencil size={14} />
                 </button>
                 <button
-                  onClick={() => setToggleTarget(conta)}
+                  onClick={e => { e.stopPropagation(); setToggleTarget(conta) }}
                   className={clsx('p-1.5 rounded transition', conta.ativo ? 'text-gray-400 hover:text-red-500' : 'text-gray-400 hover:text-green-600')}
                   title={conta.ativo ? 'Inativar' : 'Reativar'}
                 >

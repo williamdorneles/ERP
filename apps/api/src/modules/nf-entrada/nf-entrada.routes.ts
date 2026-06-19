@@ -5,27 +5,34 @@ import { parseNFe } from './nfe.parser.js'
 import { consultarDistribuicao } from './sefaz-distribuicao.service.js'
 import { z } from 'zod'
 
-// ── Schemas de validação ──────────────────────────────────────────────────────
+// ── Schemas ───────────────────────────────────────────────────────────────────
 
-const ItemConfirmacaoSchema = z.object({
+const ItemSalvarSchema = z.object({
   nItem: z.number().int(),
   produtoId: z.string().uuid().nullable(),
+  produtoNovo: z.boolean().default(false),
+  cProd: z.string().optional(),
   descricao: z.string(),
   ncm: z.string().optional(),
   cfop: z.string().optional(),
   unidade: z.string().optional(),
-  quantidade: z.number().positive(),
-  valorUnitario: z.number().positive(),
-  valorTotal: z.number().positive(),
+  quantidade: z.number().nonnegative(),
+  valorUnitario: z.number().nonnegative(),
+  valorTotal: z.number().nonnegative(),
 })
 
-const ParcelaConfirmacaoSchema = z.object({
+const ParcelaSchema = z.object({
   numero: z.string(),
+  dias: z.number().default(0),
   vencimento: z.string(),
   valor: z.number().positive(),
+  envioPara: z.enum(['PRAZO', 'CAIXA', 'CONTA']).default('PRAZO'),
+  contaBancariaId: z.string().uuid().nullable().optional(),
+  meioPagamento: z.string().optional(),
 })
 
-const ConfirmarNfEntradaSchema = z.object({
+const SalvarNfSchema = z.object({
+  id: z.string().uuid().optional(),
   chaveAcesso: z.string().max(44).optional(),
   numero: z.string().optional(),
   serie: z.string().optional(),
@@ -35,14 +42,72 @@ const ConfirmarNfEntradaSchema = z.object({
   fornecedorNome: z.string().min(1),
   fornecedorCnpj: z.string().optional().nullable(),
   totalProdutos: z.number(),
+  vFrete: z.number().default(0),
+  vSeg: z.number().default(0),
+  vDesc: z.number().default(0),
+  vOutro: z.number().default(0),
+  vBC: z.number().default(0),
+  vICMS: z.number().default(0),
+  vICMSDeson: z.number().default(0),
+  vBCST: z.number().default(0),
+  vST: z.number().default(0),
+  vFCP: z.number().default(0),
+  vFCPST: z.number().default(0),
+  vIPI: z.number().default(0),
+  vIPIDevol: z.number().default(0),
+  vPIS: z.number().default(0),
+  vCOFINS: z.number().default(0),
+  vII: z.number().default(0),
+  vTotTrib: z.number().default(0),
   totalImpostos: z.number().default(0),
   totalNf: z.number(),
-  observacao: z.string().max(500).optional(),
   contaFinanceiraId: z.string().uuid().optional().nullable(),
-  itens: z.array(ItemConfirmacaoSchema).min(1),
-  parcelas: z.array(ParcelaConfirmacaoSchema).min(1),
+  observacao: z.string().max(500).optional(),
+  itens: z.array(ItemSalvarSchema).min(1),
+  parcelas: z.array(ParcelaSchema).default([]),
   xmlOriginal: z.string().optional(),
 })
+
+const FormarCustoSchema = z.object({
+  frete: z.number().min(0),
+  outros: z.number().min(0).default(0),
+})
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+const SELECT_PRODUTO = { id: true, codigo: true, nome: true, unidadeMedida: true, custoUnitario: true } as const
+
+function mapUnidade(u: string) {
+  const v = (u ?? '').toUpperCase()
+  if (v === 'KG' || v === 'KGS') return 'KG'
+  if (v === 'G' || v === 'GR' || v === 'GRS') return 'G'
+  if (v === 'L' || v === 'LT' || v === 'LTS') return 'L'
+  if (v === 'ML') return 'ML'
+  if (v === 'CX' || v === 'BX') return 'CX'
+  if (v === 'PCT' || v === 'PC' || v === 'PK') return 'PCT'
+  return 'UN'
+}
+
+async function autoMatchProduto(cProd: string, ncm: string, fornecedorId: string | null) {
+  if (cProd) {
+    const p = await prisma.produto.findFirst({
+      where: { codigoFornecedor: cProd, ativo: true, ...(fornecedorId ? { fornecedorId } : {}) },
+      select: SELECT_PRODUTO,
+    })
+    if (p) return p
+  }
+  if (cProd) {
+    const p = await prisma.produto.findFirst({ where: { codigo: cProd, ativo: true }, select: SELECT_PRODUTO })
+    if (p) return p
+  }
+  if (ncm) {
+    const p = await prisma.produto.findFirst({ where: { ncm, ativo: true }, select: SELECT_PRODUTO })
+    if (p) return p
+  }
+  return null
+}
+
+// ── Rotas ─────────────────────────────────────────────────────────────────────
 
 export async function nfEntradaRoutes(app: FastifyInstance) {
   app.addHook('preHandler', requirePerfil('ADMIN', 'GERENTE', 'FINANCEIRO', 'ESTOQUE'))
@@ -56,7 +121,6 @@ export async function nfEntradaRoutes(app: FastifyInstance) {
     try {
       const parsed = parseNFe(xml)
 
-      // Tenta auto-vincular fornecedor por CNPJ
       let fornecedor = null
       if (parsed.emitenteCnpj) {
         const cnpjLimpo = parsed.emitenteCnpj.replace(/\D/g, '')
@@ -66,32 +130,21 @@ export async function nfEntradaRoutes(app: FastifyInstance) {
         })
       }
 
-      // Tenta auto-vincular produtos por código ou NCM
       const itensComProduto = await Promise.all(
         parsed.itens.map(async item => {
-          let produto = null
-
-          // 1. Por código exato
-          if (item.cProd) {
-            produto = await prisma.produto.findFirst({
-              where: { codigo: item.cProd, ativo: true },
-              select: { id: true, codigo: true, nome: true, unidadeMedida: true, custoUnitario: true },
-            })
-          }
-
-          // 2. Por NCM (pega o primeiro cadastrado com esse NCM)
-          if (!produto && item.ncm) {
-            produto = await prisma.produto.findFirst({
-              where: { ncm: item.ncm, ativo: true },
-              select: { id: true, codigo: true, nome: true, unidadeMedida: true, custoUnitario: true },
-            })
-          }
-
-          return { ...item, produto }
-        })
+          const produto = await autoMatchProduto(item.cProd, item.ncm, fornecedor?.id ?? null)
+          return { ...item, produtoId: produto?.id ?? null, produtoNovo: false, produto }
+        }),
       )
 
-      return { ...parsed, fornecedor, itens: itensComProduto }
+      return {
+        ...parsed,
+        fornecedorId: fornecedor?.id ?? null,
+        fornecedorNome: fornecedor?.nome ?? parsed.emitenteNome,
+        fornecedorCnpj: parsed.emitenteCnpj,
+        fornecedor,
+        itens: itensComProduto,
+      }
     } catch (err) {
       return reply.code(400).send({ error: `Erro ao processar XML: ${err instanceof Error ? err.message : 'formato inválido'}` })
     }
@@ -146,98 +199,205 @@ export async function nfEntradaRoutes(app: FastifyInstance) {
     return nf
   })
 
-  // ── Confirmar NF de Entrada ────────────────────────────────────────────────
+  // ── Salvar NF (RASCUNHO — sem lançar estoque ou financeiro) ──────────────
 
-  app.post('/confirmar', async (request, reply) => {
-    const data = ConfirmarNfEntradaSchema.parse(request.body)
+  app.post('/salvar', async (request, reply) => {
+    const data = SalvarNfSchema.parse(request.body)
+    const isUpdate = !!data.id
 
-    // Verifica chave duplicada
-    if (data.chaveAcesso) {
-      const existe = await prisma.nfEntrada.findUnique({ where: { chaveAcesso: data.chaveAcesso } })
-      if (existe) return reply.code(409).send({ error: 'NF-e com esta chave de acesso já foi lançada.' })
+    if (isUpdate) {
+      const existing = await prisma.nfEntrada.findUnique({ where: { id: data.id } })
+      if (!existing) return reply.code(404).send({ error: 'NF não encontrada.' })
+      if (existing.estoqueElancado || existing.financeiroLancado) {
+        return reply.code(409).send({ error: 'NF com lançamentos não pode ser editada. Estorne os lançamentos primeiro.' })
+      }
+      if (data.chaveAcesso) {
+        const outra = await prisma.nfEntrada.findFirst({ where: { chaveAcesso: data.chaveAcesso, id: { not: data.id } } })
+        if (outra) return reply.code(409).send({ error: 'NF-e com esta chave de acesso já foi importada.' })
+      }
+    } else {
+      if (data.chaveAcesso) {
+        const existe = await prisma.nfEntrada.findUnique({ where: { chaveAcesso: data.chaveAcesso } })
+        if (existe) return reply.code(409).send({ error: 'NF-e com esta chave de acesso já foi importada.' })
+      }
     }
 
-    // Busca configuração de método de custo
+    // Auto-cadastro do fornecedor quando não encontrado no cadastro
+    let fornecedorId = data.fornecedorId || null
+    if (!fornecedorId && data.fornecedorCnpj) {
+      const cnpjLimpo = data.fornecedorCnpj.replace(/\D/g, '')
+      // Verifica se já existe (pode ter sido criado entre o parse-xml e o salvar)
+      const existente = await prisma.pessoa.findFirst({
+        where: { documento: { contains: cnpjLimpo } },
+        select: { id: true },
+      })
+      if (existente) {
+        fornecedorId = existente.id
+      } else {
+        // Gera código sequencial para a Pessoa
+        const ultima = await prisma.pessoa.findFirst({ orderBy: { codigo: 'desc' }, select: { codigo: true } })
+        const proximoCodigo = String((parseInt(ultima?.codigo ?? '0', 10) || 0) + 1).padStart(6, '0')
+        const novo = await prisma.pessoa.create({
+          data: {
+            codigo: proximoCodigo,
+            tipo: 'FORNECEDOR',
+            tipoLegal: cnpjLimpo.length === 14 ? 'PJ' : 'PF',
+            nome: data.fornecedorNome,
+            documento: cnpjLimpo,
+          },
+        })
+        fornecedorId = novo.id
+      }
+    }
+
+    const totalImpostosCalc = +(
+      data.vICMS + data.vST + data.vIPI + data.vPIS + data.vCOFINS +
+      data.vII + data.vFCP + data.vFCPST - data.vICMSDeson - data.vIPIDevol
+    ).toFixed(2)
+
+    const nfData = {
+      chaveAcesso: data.chaveAcesso || null,
+      numero: data.numero || null,
+      serie: data.serie || null,
+      dataEmissao: new Date(data.dataEmissao),
+      dataEntrada: new Date(data.dataEntrada),
+      fornecedorId,
+      fornecedorNome: data.fornecedorNome,
+      fornecedorCnpj: data.fornecedorCnpj || null,
+      totalProdutos: data.totalProdutos,
+      vFrete: data.vFrete, vSeg: data.vSeg, vDesc: data.vDesc, vOutro: data.vOutro,
+      vBC: data.vBC, vICMS: data.vICMS, vICMSDeson: data.vICMSDeson,
+      vBCST: data.vBCST, vST: data.vST, vFCP: data.vFCP, vFCPST: data.vFCPST,
+      vIPI: data.vIPI, vIPIDevol: data.vIPIDevol, vPIS: data.vPIS,
+      vCOFINS: data.vCOFINS, vII: data.vII, vTotTrib: data.vTotTrib,
+      totalImpostos: totalImpostosCalc,
+      totalNf: data.totalNf,
+      contaFinanceiraId: data.contaFinanceiraId || null,
+      observacao: data.observacao || null,
+      xmlOriginal: data.xmlOriginal || null,
+      parcelasJson: data.parcelas.length > 0 ? JSON.stringify(data.parcelas) : null,
+    }
+
+    const itensData = data.itens.map(i => ({
+      nItem: i.nItem,
+      cProd: i.cProd || null,
+      descricao: i.descricao,
+      ncm: i.ncm || null,
+      cfop: i.cfop || null,
+      unidade: i.unidade || null,
+      quantidade: i.quantidade,
+      valorUnitario: i.valorUnitario,
+      valorTotal: i.valorTotal,
+      produtoId: i.produtoId || null,
+      produtoNovo: i.produtoNovo ?? false,
+    }))
+
+    let nfId: string
+
+    if (isUpdate) {
+      await prisma.itemNfEntrada.deleteMany({ where: { nfEntradaId: data.id } })
+      await prisma.nfEntrada.update({
+        where: { id: data.id },
+        data: { ...nfData, itens: { create: itensData } },
+      })
+      nfId = data.id!
+    } else {
+      const nf = await prisma.nfEntrada.create({
+        data: { ...nfData, status: 'RASCUNHO', itens: { create: itensData } },
+      })
+      nfId = nf.id
+    }
+
+    // Salva mapeamento cProd → produto para auto-match futuro
+    for (const item of data.itens) {
+      if (!item.produtoId || !item.cProd) continue
+      await prisma.produto.updateMany({
+        where: { id: item.produtoId, codigoFornecedor: null },
+        data: { codigoFornecedor: item.cProd, fornecedorId: fornecedorId ?? null },
+      })
+    }
+
+    return reply.code(isUpdate ? 200 : 201).send({ id: nfId })
+  })
+
+  // ── Lançar Estoque ────────────────────────────────────────────────────────
+
+  app.post('/:id/lancar-estoque', async (request, reply) => {
+    const { id } = request.params as { id: string }
+
+    const nf = await prisma.nfEntrada.findUnique({
+      where: { id },
+      include: { itens: true },
+    })
+    if (!nf) return reply.code(404).send({ error: 'NF não encontrada.' })
+    if (nf.estoqueElancado) return reply.code(409).send({ error: 'Estoque já foi lançado para esta NF.' })
+
     const configMetodo = await prisma.configuracao.findUnique({ where: { chave: 'METODO_CUSTO' } })
     const metodo = configMetodo?.valor ?? 'MEDIO'
 
-    // Itens vinculados a produtos (apenas os que têm produtoId)
-    const itensComProduto = data.itens.filter(i => i.produtoId)
-
-    // Busca produtos atuais para cálculo do custo médio
-    const produtos = itensComProduto.length > 0
-      ? await prisma.produto.findMany({
-          where: { id: { in: itensComProduto.map(i => i.produtoId!) } },
-          select: { id: true, estoqueAtual: true, custoMedio: true, ultimoCusto: true },
-        })
-      : []
-
-    const produtoMap = new Map(produtos.map(p => [p.id, p]))
-
     await prisma.$transaction(async (tx) => {
-      // 1. Cria NfEntrada
-      const nf = await tx.nfEntrada.create({
-        data: {
-          chaveAcesso: data.chaveAcesso || null,
-          numero: data.numero || null,
-          serie: data.serie || null,
-          dataEmissao: new Date(data.dataEmissao),
-          dataEntrada: new Date(data.dataEntrada),
-          fornecedorId: data.fornecedorId || null,
-          fornecedorNome: data.fornecedorNome,
-          fornecedorCnpj: data.fornecedorCnpj || null,
-          totalProdutos: data.totalProdutos,
-          totalImpostos: data.totalImpostos,
-          totalNf: data.totalNf,
-          status: 'CONFIRMADA',
-          observacao: data.observacao || null,
-          xmlOriginal: data.xmlOriginal || null,
-          itens: {
-            create: data.itens.map(i => ({
-              nItem: i.nItem,
-              descricao: i.descricao,
-              ncm: i.ncm || null,
-              cfop: i.cfop || null,
-              unidade: i.unidade || null,
-              quantidade: i.quantidade,
-              valorUnitario: i.valorUnitario,
-              valorTotal: i.valorTotal,
-              produtoId: i.produtoId || null,
-            })),
+      // 1. Cria produtos marcados como "novo"
+      for (const item of nf.itens.filter(i => i.produtoNovo && !i.produtoId)) {
+        const last = await tx.produto.findFirst({ orderBy: { codigo: 'desc' }, select: { codigo: true } })
+        const nextNum = (parseInt(last?.codigo ?? '0', 10) || 0) + 1
+        const codigo = String(nextNum).padStart(6, '0')
+
+        const novoProduto = await tx.produto.create({
+          data: {
+            codigo,
+            nome: item.descricao,
+            tipo: 'INSUMO',
+            unidadeMedida: mapUnidade(item.unidade ?? 'UN') as never,
+            ncm: item.ncm ?? null,
+            custoUnitario: Number(item.valorUnitario),
+            fornecedorId: nf.fornecedorId ?? null,
+            codigoFornecedor: item.cProd ?? null,
           },
-        },
+        })
+
+        await tx.itemNfEntrada.update({
+          where: { id: item.id },
+          data: { produtoId: novoProduto.id, produtoNovo: false },
+        })
+      }
+
+      // 2. Recarrega itens com produtoId (incluindo os recém-criados)
+      const itensComProduto = await tx.itemNfEntrada.findMany({
+        where: { nfEntradaId: id, produtoId: { not: null } },
       })
 
-      // 2. Para cada item com produto vinculado: movimentação + atualiza custo
+      const produtoIds = itensComProduto.map(i => i.produtoId!)
+      const produtos = await tx.produto.findMany({
+        where: { id: { in: produtoIds } },
+        select: { id: true, estoqueAtual: true, custoMedio: true, ultimoCusto: true },
+      })
+      const produtoMap = new Map(produtos.map(p => [p.id, p]))
+
+      // 3. Movimentações de estoque
       for (const item of itensComProduto) {
         const prod = produtoMap.get(item.produtoId!)
         if (!prod) continue
 
         const estoqueAtual = Number(prod.estoqueAtual)
         const custoMedioAtual = Number(prod.custoMedio)
-        const novoCusto = item.valorUnitario
-
-        // Custo médio ponderado
-        const novoEstoque = estoqueAtual + item.quantidade
+        const novoCusto = Number(item.valorUnitario)
+        const novoEstoque = estoqueAtual + Number(item.quantidade)
         const novoCustoMedio = novoEstoque > 0
-          ? (estoqueAtual * custoMedioAtual + item.quantidade * novoCusto) / novoEstoque
+          ? (estoqueAtual * custoMedioAtual + Number(item.quantidade) * novoCusto) / novoEstoque
           : novoCusto
-
         const custoAtivo = metodo === 'ULTIMO' ? novoCusto : novoCustoMedio
 
-        // Movimentação de estoque
         await tx.movimentacaoEstoque.create({
           data: {
             produtoId: item.produtoId!,
-            nfEntradaId: nf.id,
+            nfEntradaId: id,
             tipo: 'ENTRADA',
             quantidade: item.quantidade,
             custoUnitario: novoCusto,
-            observacao: `NF ${data.numero || nf.id} — ${item.descricao}`,
+            observacao: `NF ${nf.numero || id} — ${item.descricao}`,
           },
         })
 
-        // Atualiza produto
         await tx.produto.update({
           where: { id: item.produtoId! },
           data: {
@@ -249,38 +409,168 @@ export async function nfEntradaRoutes(app: FastifyInstance) {
         })
       }
 
-      // 3. Cria Título a Pagar com parcelas
-      const totalParcelas = data.parcelas.reduce((s, p) => s + p.valor, 0)
-      await tx.tituloFinanceiro.create({
-        data: {
-          tipo: 'PAGAR',
-          descricao: `NF ${data.numero || nf.id} — ${data.fornecedorNome}`,
-          total: totalParcelas,
-          pessoaId: data.fornecedorId || null,
-          nfEntradaId: nf.id,
-          contaFinanceiraId: data.contaFinanceiraId || null,
-          observacao: data.observacao || null,
-          parcelas: {
-            create: data.parcelas.map((p, idx) => ({
-              numero: idx + 1,
-              valor: p.valor,
-              vencimento: new Date(p.vencimento),
-              observacao: p.numero ? `Dup. ${p.numero}` : null,
-            })),
-          },
-        },
+      await tx.nfEntrada.update({
+        where: { id },
+        data: { estoqueElancado: true, status: 'CONFIRMADA' },
       })
     })
 
-    return reply.code(201).send({ ok: true })
+    return { ok: true }
+  })
+
+  // ── Lançar Financeiro ─────────────────────────────────────────────────────
+
+  app.post('/:id/lancar-financeiro', async (request, reply) => {
+    const { id } = request.params as { id: string }
+
+    const nf = await prisma.nfEntrada.findUnique({
+      where: { id },
+      select: {
+        id: true, numero: true, fornecedorId: true, fornecedorNome: true,
+        totalNf: true, financeiroLancado: true,
+        contaFinanceiraId: true, parcelasJson: true,
+      },
+    })
+    if (!nf) return reply.code(404).send({ error: 'NF não encontrada.' })
+    if (nf.financeiroLancado) return reply.code(409).send({ error: 'Financeiro já lançado para esta NF.' })
+
+    type ParcelaSalva = {
+      numero: string; dias: number; vencimento: string; valor: number
+      envioPara: 'PRAZO' | 'CAIXA' | 'CONTA'
+      contaBancariaId?: string | null
+      meioPagamento?: string
+    }
+    const parcelas: ParcelaSalva[] = nf.parcelasJson
+      ? JSON.parse(nf.parcelasJson)
+      : [{ numero: '001', dias: 0, vencimento: new Date().toISOString().slice(0, 10), valor: Number(nf.totalNf), envioPara: 'PRAZO' }]
+
+    // Resolve conta caixa uma vez (usada por parcelas com envioPara=CAIXA)
+    let caixaId: string | null = null
+    if (parcelas.some(p => p.envioPara === 'CAIXA')) {
+      const caixa = await prisma.contaBancaria.findFirst({ where: { isCaixa: true, ativo: true }, select: { id: true } })
+      caixaId = caixa?.id ?? null
+    }
+
+    const totalParcelas = parcelas.reduce((s, p) => s + p.valor, 0)
+    const todasPagas = parcelas.every(p => p.envioPara !== 'PRAZO')
+
+    await prisma.tituloFinanceiro.create({
+      data: {
+        tipo: 'PAGAR',
+        descricao: `NF ${nf.numero || id} — ${nf.fornecedorNome}`,
+        total: totalParcelas,
+        pessoaId: nf.fornecedorId || null,
+        nfEntradaId: id,
+        contaFinanceiraId: nf.contaFinanceiraId || null,
+        status: todasPagas ? 'QUITADO' : 'ABERTO',
+        parcelas: {
+          create: parcelas.map((p, idx) => {
+            const pago = p.envioPara !== 'PRAZO'
+            const contaBancariaId =
+              p.envioPara === 'CAIXA' ? caixaId
+              : p.envioPara === 'CONTA' ? (p.contaBancariaId ?? null)
+              : null
+            return {
+              numero: idx + 1,
+              valor: p.valor,
+              vencimento: new Date(p.vencimento),
+              status: pago ? 'QUITADO' : 'ABERTO',
+              dataBaixa: pago ? new Date() : null,
+              valorPago: pago ? p.valor : null,
+              contaBancariaId,
+              observacao: p.numero ? `Dup. ${p.numero}` : null,
+            }
+          }),
+        },
+      },
+    })
+
+    await prisma.nfEntrada.update({ where: { id }, data: { financeiroLancado: true } })
+
+    return { ok: true }
+  })
+
+  // ── Formar Custo ──────────────────────────────────────────────────────────
+
+  app.post('/:id/formar-custo', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const data = FormarCustoSchema.parse(request.body)
+
+    const nf = await prisma.nfEntrada.findUnique({
+      where: { id },
+      include: { itens: { where: { produtoId: { not: null } } } },
+    })
+    if (!nf) return reply.code(404).send({ error: 'NF não encontrada.' })
+    if (nf.custoFormado) return reply.code(409).send({ error: 'Custo já formado para esta NF.' })
+    if (!nf.estoqueElancado) return reply.code(400).send({ error: 'Lance o estoque antes de formar o custo.' })
+
+    const totalAdicional = data.frete + data.outros
+    const totalProdutos = nf.itens.reduce((s, i) => s + Number(i.valorTotal), 0)
+    if (totalProdutos <= 0 || nf.itens.length === 0) {
+      return reply.code(400).send({ error: 'Nenhum produto vinculado na nota.' })
+    }
+
+    await prisma.$transaction(async (tx) => {
+      for (const item of nf.itens) {
+        if (!item.produtoId) continue
+        const participacao = Number(item.valorTotal) / totalProdutos
+        const adicionalItem = totalAdicional * participacao
+        const custoNovo = Number(item.valorUnitario) + adicionalItem / Number(item.quantidade)
+
+        await tx.produto.update({
+          where: { id: item.produtoId },
+          data: { ultimoCusto: +custoNovo.toFixed(4), custoUnitario: +custoNovo.toFixed(4) },
+        })
+      }
+      await tx.nfEntrada.update({ where: { id }, data: { custoFormado: true } })
+    })
+
+    return { ok: true }
+  })
+
+  // ── Preview para Formar Custo (sem salvar) ────────────────────────────────
+
+  app.get('/:id/preview-custo', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const { frete = '0', outros = '0' } = request.query as { frete?: string; outros?: string }
+
+    const nf = await prisma.nfEntrada.findUnique({
+      where: { id },
+      include: {
+        itens: {
+          where: { produtoId: { not: null } },
+          include: { produto: { select: { id: true, codigo: true, nome: true, custoUnitario: true, custoMedio: true, ultimoCusto: true } } },
+        },
+      },
+    })
+    if (!nf) return reply.code(404).send({ error: 'NF não encontrada.' })
+
+    const totalAdicional = Number(frete) + Number(outros)
+    const totalProdutos = nf.itens.reduce((s, i) => s + Number(i.valorTotal), 0)
+
+    const itens = nf.itens.map(item => {
+      const participacao = totalProdutos > 0 ? Number(item.valorTotal) / totalProdutos : 0
+      const adicionalItem = totalAdicional * participacao
+      const custoNovo = Number(item.valorUnitario) + adicionalItem / Number(item.quantidade)
+      return {
+        id: item.id,
+        descricao: item.descricao,
+        quantidade: Number(item.quantidade),
+        valorTotal: Number(item.valorTotal),
+        adicionalRateado: +adicionalItem.toFixed(4),
+        custoAtual: Number(item.produto?.custoUnitario ?? 0),
+        custoNovo: +custoNovo.toFixed(4),
+        produto: item.produto,
+      }
+    })
+
+    return { totalAdicional, totalProdutos, itens }
   })
 
   // ── Sincronizar com SEFAZ (NFeDistribuicaoDFe) ────────────────────────────
 
   app.post('/sincronizar-sefaz', async (_request, reply) => {
-    const empresa = await prisma.empresa.findFirst({
-      include: { certificado: true },
-    })
+    const empresa = await prisma.empresa.findFirst({ include: { certificado: true } })
     if (!empresa) return reply.code(400).send({ error: 'Empresa não configurada.' })
     if (!empresa.certificado) return reply.code(400).send({ error: 'Certificado digital não configurado. Acesse Configurações.' })
     if (!empresa.uf) return reply.code(400).send({ error: 'UF da empresa não configurada.' })
@@ -297,70 +587,46 @@ export async function nfEntradaRoutes(app: FastifyInstance) {
       let resultado
       try {
         resultado = await consultarDistribuicao(
-          empresa.cnpj,
-          empresa.uf,
-          empresa.ambiente,
-          empresa.certificado.arquivoBase64,
-          empresa.certificado.senha,
-          ultNSU,
+          empresa.cnpj, empresa.uf, empresa.ambiente,
+          empresa.certificado.arquivoBase64, empresa.certificado.senha, ultNSU,
         )
       } catch (err) {
-        return reply.code(502).send({
-          error: `Falha ao comunicar com SEFAZ: ${err instanceof Error ? err.message : 'erro desconhecido'}`,
-        })
+        return reply.code(502).send({ error: `Falha ao comunicar com SEFAZ: ${err instanceof Error ? err.message : 'erro desconhecido'}` })
       }
 
-      // cStat 656 = consumo indevido (rate limit: 1 req/hora por CNPJ)
       if (resultado.cStat === '656') {
         return reply.code(429).send({ error: 'SEFAZ: consumo indevido — aguarde antes de consultar novamente (limite: 1 vez por hora por CNPJ).' })
       }
-
       if (resultado.cStat !== '137' && resultado.cStat !== '138') {
         return reply.code(502).send({ error: `SEFAZ retornou: ${resultado.cStat} — ${resultado.xMotivo}` })
       }
 
       todosDocumentos.push(...resultado.documentos)
-
       if (resultado.ultNSU) ultNSU = resultado.ultNSU
-
-      // Continua paginando se ainda há documentos
-      temMais = resultado.cStat === '138' &&
-                resultado.ultNSU !== resultado.maxNSU &&
-                !!resultado.maxNSU
+      temMais = resultado.cStat === '138' && resultado.ultNSU !== resultado.maxNSU && !!resultado.maxNSU
     }
 
-    // Persiste último NSU consultado
     await prisma.configuracao.upsert({
       where: { chave: 'ULTIMO_NSU_ENTRADA' },
       update: { valor: ultNSU },
       create: { chave: 'ULTIMO_NSU_ENTRADA', valor: ultNSU, descricao: 'Último NSU da distribuição NF-e de entrada' },
     })
 
-    // Processa apenas procNFe (XML completo autorizado)
     const cnpjEmpresa = empresa.cnpj.replace(/\D/g, '')
-
     const nfeXmls = todosDocumentos.filter(d => d.tipoDoc === 'procNFe')
-
-    // Chaves já importadas (evita duplicatas)
     const chavesExistentes = new Set(
       (await prisma.nfEntrada.findMany({ select: { chaveAcesso: true }, where: { chaveAcesso: { not: null } } }))
         .map(n => n.chaveAcesso!),
     )
 
     const nfesParseadas: unknown[] = []
-
     for (const doc of nfeXmls) {
       try {
         const parsed = parseNFe(doc.xml)
-
-        // Só importa NF-es onde somos o destinatário
         const destCnpj = parsed.destinatarioCnpj.replace(/\D/g, '')
         if (destCnpj && destCnpj !== cnpjEmpresa) continue
-
-        // Pula chaves já importadas
         if (parsed.chaveAcesso && chavesExistentes.has(parsed.chaveAcesso)) continue
 
-        // Auto-vincula fornecedor por CNPJ
         let fornecedor = null
         if (parsed.emitenteCnpj) {
           const cnpjLimpo = parsed.emitenteCnpj.replace(/\D/g, '')
@@ -370,95 +636,135 @@ export async function nfEntradaRoutes(app: FastifyInstance) {
           })
         }
 
-        // Auto-vincula produtos por código ou NCM
         const itensComProduto = await Promise.all(
           parsed.itens.map(async item => {
-            let produto = null
-            if (item.cProd) {
-              produto = await prisma.produto.findFirst({
-                where: { codigo: item.cProd, ativo: true },
-                select: { id: true, codigo: true, nome: true, unidadeMedida: true, custoUnitario: true },
-              })
-            }
-            if (!produto && item.ncm) {
-              produto = await prisma.produto.findFirst({
-                where: { ncm: item.ncm, ativo: true },
-                select: { id: true, codigo: true, nome: true, unidadeMedida: true, custoUnitario: true },
-              })
-            }
-            return { ...item, produto }
+            const produto = await autoMatchProduto(item.cProd, item.ncm, fornecedor?.id ?? null)
+            return { ...item, produtoId: produto?.id ?? null, produtoNovo: false, produto }
           }),
         )
 
         nfesParseadas.push({
           nsu: doc.nsu,
           ...parsed,
+          fornecedorId: fornecedor?.id ?? null,
+          fornecedorNome: fornecedor?.nome ?? parsed.emitenteNome,
+          fornecedorCnpj: parsed.emitenteCnpj,
           fornecedor,
           itens: itensComProduto,
           xmlOriginal: doc.xml,
         })
-      } catch {
-        // Ignora XML malformado
-      }
+      } catch { /* ignora XML malformado */ }
     }
-
-    const resNFeCount = todosDocumentos.filter(d => d.tipoDoc === 'resNFe').length
 
     return {
       totalDocumentos: todosDocumentos.length,
       nfesNovos: nfesParseadas.length,
-      resNFeIgnorados: resNFeCount,
+      resNFeIgnorados: todosDocumentos.filter(d => d.tipoDoc === 'resNFe').length,
       ultNSU,
       nfes: nfesParseadas,
     }
   })
 
-  // ── Cancelar NF ───────────────────────────────────────────────────────────
+  // ── Estornar Estoque ──────────────────────────────────────────────────────
 
-  app.patch('/:id/cancelar', async (request, reply) => {
+  app.post('/:id/estornar-estoque', async (request, reply) => {
     const { id } = request.params as { id: string }
+
     const nf = await prisma.nfEntrada.findUnique({
       where: { id },
-      include: { itens: { where: { produtoId: { not: null } } }, titulos: { include: { parcelas: { where: { status: 'QUITADO' } } } } },
+      include: { itens: { where: { produtoId: { not: null } } } },
     })
     if (!nf) return reply.code(404).send({ error: 'NF não encontrada.' })
-    if (nf.status === 'CANCELADA') return reply.code(409).send({ error: 'NF já cancelada.' })
-    if (nf.titulos.some(t => t.parcelas.length > 0)) {
-      return reply.code(409).send({ error: 'NF possui parcelas já quitadas. Não é possível cancelar.' })
-    }
+    if (!nf.estoqueElancado) return reply.code(409).send({ error: 'Estoque não foi lançado para esta NF.' })
 
     await prisma.$transaction(async (tx) => {
-      // Estorna movimentações de estoque
       for (const item of nf.itens) {
         if (!item.produtoId) continue
+
+        // Busca o custo anterior à entrada desta NF para este produto
+        const movAnterior = await tx.movimentacaoEstoque.findFirst({
+          where: {
+            produtoId: item.produtoId,
+            nfEntradaId: { not: id },
+            custoUnitario: { not: null },
+          },
+          orderBy: { criadoEm: 'desc' },
+          select: { custoUnitario: true },
+        })
+
+        const custoAnterior = movAnterior ? Number(movAnterior.custoUnitario) : Number(item.valorUnitario)
+
         await tx.movimentacaoEstoque.create({
           data: {
             produtoId: item.produtoId,
             nfEntradaId: id,
             tipo: 'AJUSTE',
             quantidade: -item.quantidade,
-            observacao: `Estorno NF ${nf.numero || id}`,
+            custoUnitario: +custoAnterior.toFixed(4),
+            observacao: `Estorno estoque NF ${nf.numero || id} — ${item.descricao}`,
           },
         })
+
         await tx.produto.update({
           where: { id: item.produtoId },
-          data: { estoqueAtual: { decrement: item.quantidade } },
+          data: {
+            estoqueAtual: { decrement: item.quantidade },
+            ultimoCusto: +custoAnterior.toFixed(4),
+            custoUnitario: +custoAnterior.toFixed(4),
+          },
         })
       }
 
-      // Cancela títulos a pagar
-      await tx.parcelaFinanceira.updateMany({
-        where: { titulo: { nfEntradaId: id }, status: 'ABERTO' },
-        data: { status: 'CANCELADO' },
+      await tx.nfEntrada.update({
+        where: { id },
+        data: { estoqueElancado: false, custoFormado: false, status: 'RASCUNHO' },
       })
-      await tx.tituloFinanceiro.updateMany({
-        where: { nfEntradaId: id },
-        data: { status: 'CANCELADO' },
-      })
-
-      await tx.nfEntrada.update({ where: { id }, data: { status: 'CANCELADA' } })
     })
 
     return { ok: true }
   })
+
+  // ── Estornar Financeiro ───────────────────────────────────────────────────
+
+  app.post('/:id/estornar-financeiro', async (request, reply) => {
+    const { id } = request.params as { id: string }
+
+    const nf = await prisma.nfEntrada.findUnique({
+      where: { id },
+      include: { titulos: { include: { parcelas: true } } },
+    })
+    if (!nf) return reply.code(404).send({ error: 'NF não encontrada.' })
+    if (!nf.financeiroLancado) return reply.code(409).send({ error: 'Financeiro não foi lançado para esta NF.' })
+
+    const parcelasQuitadas = nf.titulos.flatMap(t => t.parcelas).filter(p => p.status === 'QUITADO')
+    if (parcelasQuitadas.length > 0) {
+      return reply.code(409).send({ error: `Não é possível estornar pois ${parcelasQuitadas.length} parcela(s) já estão quitadas.` })
+    }
+
+    await prisma.$transaction(async (tx) => {
+      const tituloIds = nf.titulos.map(t => t.id)
+      await tx.parcelaFinanceira.deleteMany({ where: { tituloId: { in: tituloIds } } })
+      await tx.tituloFinanceiro.deleteMany({ where: { nfEntradaId: id } })
+      await tx.nfEntrada.update({ where: { id }, data: { financeiroLancado: false } })
+    })
+
+    return { ok: true }
+  })
+
+  // ── Excluir NF ────────────────────────────────────────────────────────────
+
+  app.delete('/:id', async (request, reply) => {
+    const { id } = request.params as { id: string }
+
+    const nf = await prisma.nfEntrada.findUnique({ where: { id } })
+    if (!nf) return reply.code(404).send({ error: 'NF não encontrada.' })
+    if (nf.estoqueElancado || nf.financeiroLancado) {
+      return reply.code(409).send({ error: 'Não é possível excluir. Estorne os lançamentos primeiro.' })
+    }
+
+    await prisma.nfEntrada.delete({ where: { id } })
+
+    return { ok: true }
+  })
+
 }

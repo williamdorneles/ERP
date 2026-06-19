@@ -132,6 +132,9 @@ model Produto {
   pCOFINS          Decimal?    @db.Decimal(7, 4)
   unidadeComercial String?     @db.VarChar(6)
   gtin             String?     @db.VarChar(14)
+  // Vínculo com fornecedor principal (salvo na primeira NF confirmada)
+  codigoFornecedor String?
+  fornecedorId     String?
   criadoEm        DateTime    @default(now())
   atualizadoEm    DateTime    @updatedAt
 
@@ -141,6 +144,7 @@ model Produto {
   itensPedidoCompra ItemPedidoCompra[]
   itensPedidoVenda  ItemPedidoVenda[]
   itensNfEntrada    ItemNfEntrada[]
+  fornecedor        Pessoa?  @relation("FornecedorProdutos", fields: [fornecedorId], references: [id])
 
   @@map("produtos")
 }
@@ -313,7 +317,8 @@ model Pessoa {
   pedidosVenda  PedidoVenda[]
   pedidosCompra PedidoCompra[]
   titulos       TituloFinanceiro[]
-  nfEntradas    NfEntrada[]       @relation("NfEntradaFornecedor")
+  nfEntradas   NfEntrada[] @relation("NfEntradaFornecedor")
+  produtos     Produto[]   @relation("FornecedorProdutos")
 
   @@map("pessoas")
 }
@@ -651,9 +656,10 @@ model ContaFinanceira {
 
   contaPai  ContaFinanceira?  @relation("ContaHierarquia", fields: [contaPaiId], references: [id])
   subcontas ContaFinanceira[] @relation("ContaHierarquia")
-  transacoes TransacaoFinanceira[]
-  regras     RegraClassificacao[]
-  titulos    TituloFinanceiro[]
+  transacoes  TransacaoFinanceira[]
+  regras      RegraClassificacao[]
+  titulos     TituloFinanceiro[]
+  nfsEntrada  NfEntrada[]           @relation("NfEntradaContaFinanceira")
 
   @@map("contas_financeiras")
 }
@@ -804,28 +810,56 @@ enum StatusNfEntrada {
 }
 
 model NfEntrada {
-  id              String          @id @default(uuid())
-  chaveAcesso     String?         @unique @db.VarChar(44)
-  numero          String?
-  serie           String?
-  dataEmissao     DateTime        @db.Date
-  dataEntrada     DateTime        @db.Date
-  fornecedorId    String?
-  fornecedorNome  String
-  fornecedorCnpj  String?
-  totalProdutos   Decimal         @db.Decimal(15, 2)
-  totalImpostos   Decimal         @default(0) @db.Decimal(15, 2)
-  totalNf         Decimal         @db.Decimal(15, 2)
-  status          StatusNfEntrada @default(RASCUNHO)
-  observacao      String?
-  xmlOriginal     String?         @db.Text
-  criadoEm       DateTime        @default(now())
-  atualizadoEm   DateTime        @updatedAt
+  id             String          @id @default(uuid())
+  chaveAcesso    String?         @unique @db.VarChar(44)
+  numero         String?
+  serie          String?
+  dataEmissao    DateTime        @db.Date
+  dataEntrada    DateTime        @db.Date
+  fornecedorId   String?
+  fornecedorNome String
+  fornecedorCnpj String?
+  // Valor dos produtos (soma dos itens)
+  totalProdutos  Decimal         @db.Decimal(15, 2)
+  // Frete, seguro e despesas acessórias (ICMSTot)
+  vFrete         Decimal         @default(0) @db.Decimal(15, 2)
+  vSeg           Decimal         @default(0) @db.Decimal(15, 2)
+  vDesc          Decimal         @default(0) @db.Decimal(15, 2)
+  vOutro         Decimal         @default(0) @db.Decimal(15, 2)
+  // Impostos (ICMSTot)
+  vBC            Decimal         @default(0) @db.Decimal(15, 2)
+  vICMS          Decimal         @default(0) @db.Decimal(15, 2)
+  vICMSDeson     Decimal         @default(0) @db.Decimal(15, 2)
+  vBCST          Decimal         @default(0) @db.Decimal(15, 2)
+  vST            Decimal         @default(0) @db.Decimal(15, 2)
+  vFCP           Decimal         @default(0) @db.Decimal(15, 2)
+  vFCPST         Decimal         @default(0) @db.Decimal(15, 2)
+  vIPI           Decimal         @default(0) @db.Decimal(15, 2)
+  vIPIDevol      Decimal         @default(0) @db.Decimal(15, 2)
+  vPIS           Decimal         @default(0) @db.Decimal(15, 2)
+  vCOFINS        Decimal         @default(0) @db.Decimal(15, 2)
+  vII            Decimal         @default(0) @db.Decimal(15, 2)
+  vTotTrib       Decimal         @default(0) @db.Decimal(15, 2)
+  // Totais finais
+  totalImpostos     Decimal         @default(0) @db.Decimal(15, 2)
+  totalNf           Decimal         @db.Decimal(15, 2)
+  status            StatusNfEntrada @default(RASCUNHO)
+  // Controle das ações pós-salvamento
+  estoqueElancado   Boolean         @default(false)
+  financeiroLancado Boolean         @default(false)
+  custoFormado      Boolean         @default(false)
+  parcelasJson      String?         @db.Text
+  contaFinanceiraId String?
+  observacao        String?
+  xmlOriginal       String?         @db.Text
+  criadoEm         DateTime        @default(now())
+  atualizadoEm     DateTime        @updatedAt
 
-  fornecedor    Pessoa?             @relation("NfEntradaFornecedor", fields: [fornecedorId], references: [id])
-  itens         ItemNfEntrada[]
-  movimentacoes MovimentacaoEstoque[]
-  titulos       TituloFinanceiro[]
+  fornecedor      Pessoa?               @relation("NfEntradaFornecedor", fields: [fornecedorId], references: [id])
+  contaFinanceira ContaFinanceira?      @relation("NfEntradaContaFinanceira", fields: [contaFinanceiraId], references: [id])
+  itens           ItemNfEntrada[]
+  movimentacoes   MovimentacaoEstoque[]
+  titulos         TituloFinanceiro[]
 
   @@index([dataEntrada])
   @@index([fornecedorId])
@@ -836,6 +870,7 @@ model ItemNfEntrada {
   id            String   @id @default(uuid())
   nfEntradaId   String
   nItem         Int
+  cProd         String?
   descricao     String
   ncm           String?
   cfop          String?
@@ -844,6 +879,7 @@ model ItemNfEntrada {
   valorUnitario Decimal  @db.Decimal(15, 4)
   valorTotal    Decimal  @db.Decimal(15, 2)
   produtoId     String?
+  produtoNovo   Boolean  @default(false)
 
   nfEntrada NfEntrada @relation(fields: [nfEntradaId], references: [id], onDelete: Cascade)
   produto   Produto?  @relation(fields: [produtoId], references: [id])

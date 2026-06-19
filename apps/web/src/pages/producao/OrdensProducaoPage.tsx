@@ -565,10 +565,13 @@ export function OrdensProducaoPage() {
                 const temHistorico = o.status !== 'PLANEJADA'
 
                 return (
-                  <tr key={o.id} className={clsx(
-                    'hover:bg-gray-50 transition',
-                    o.status === 'CANCELADA' && 'opacity-50',
-                  )}>
+                  <tr key={o.id}
+                    onClick={() => o.status === 'PLANEJADA' && (setOrdemSel(o), setPanelMode('editar'))}
+                    className={clsx(
+                      'hover:bg-gray-50 transition',
+                      o.status === 'PLANEJADA' && 'cursor-pointer',
+                      o.status === 'CANCELADA' && 'opacity-50',
+                    )}>
                     <td className="px-4 py-3 font-mono text-xs font-bold text-gray-700">{o.numero}</td>
                     <td className="px-4 py-3 font-medium text-gray-900">{o.fichaTecnica.produto.nome}</td>
                     <td className="px-4 py-3 text-right tabular-nums text-gray-700">

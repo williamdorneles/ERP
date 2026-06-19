@@ -45,6 +45,26 @@ export interface NFeParseResult {
   emitenteNome: string
   destinatarioCnpj: string
   totalProdutos: number
+  // Frete, seguro e despesas (ICMSTot)
+  vFrete: number
+  vSeg: number
+  vDesc: number
+  vOutro: number
+  // Impostos (ICMSTot)
+  vBC: number
+  vICMS: number
+  vICMSDeson: number
+  vBCST: number
+  vST: number
+  vFCP: number
+  vFCPST: number
+  vIPI: number
+  vIPIDevol: number
+  vPIS: number
+  vCOFINS: number
+  vII: number
+  vTotTrib: number
+  // Totais
   totalImpostos: number
   totalNf: number
   itens: NFeItem[]
@@ -75,9 +95,29 @@ export function parseNFe(xmlRaw: string): NFeParseResult {
   const destinatarioCnpj = tag(destXml, 'CNPJ') || tag(destXml, 'CPF')
 
   const totalProdutos = num(tag(totalXml, 'vProd'))
-  const totalNf = num(tag(totalXml, 'vNF'))
-  // Impostos = total NF - total produtos (desconto + frete já inclusos na lógica do XML)
-  const totalImpostos = Math.max(0, +(totalNf - totalProdutos).toFixed(2))
+  const totalNf       = num(tag(totalXml, 'vNF'))
+
+  // Frete, seguro e despesas
+  const vFrete    = num(tag(totalXml, 'vFrete'))
+  const vSeg      = num(tag(totalXml, 'vSeg'))
+  const vDesc     = num(tag(totalXml, 'vDesc'))
+  const vOutro    = num(tag(totalXml, 'vOutro'))
+  // Impostos ICMSTot
+  const vBC       = num(tag(totalXml, 'vBC'))
+  const vICMS     = num(tag(totalXml, 'vICMS'))
+  const vICMSDeson = num(tag(totalXml, 'vICMSDeson'))
+  const vBCST     = num(tag(totalXml, 'vBCST'))
+  const vST       = num(tag(totalXml, 'vST'))
+  const vFCP      = num(tag(totalXml, 'vFCP'))
+  const vFCPST    = num(tag(totalXml, 'vFCPST'))
+  const vIPI      = num(tag(totalXml, 'vIPI'))
+  const vIPIDevol = num(tag(totalXml, 'vIPIDevol'))
+  const vPIS      = num(tag(totalXml, 'vPIS'))
+  const vCOFINS   = num(tag(totalXml, 'vCOFINS'))
+  const vII       = num(tag(totalXml, 'vII'))
+  const vTotTrib  = num(tag(totalXml, 'vTotTrib'))
+
+  const totalImpostos = +(vICMS + vST + vIPI + vPIS + vCOFINS + vII + vFCP + vFCPST - vICMSDeson - vIPIDevol).toFixed(2)
 
   // Itens
   const detXmls = allTags(xml, 'det')
@@ -125,6 +165,9 @@ export function parseNFe(xmlRaw: string): NFeParseResult {
     emitenteNome,
     destinatarioCnpj,
     totalProdutos,
+    vFrete, vSeg, vDesc, vOutro,
+    vBC, vICMS, vICMSDeson, vBCST, vST, vFCP, vFCPST,
+    vIPI, vIPIDevol, vPIS, vCOFINS, vII, vTotTrib,
     totalImpostos,
     totalNf,
     itens,
