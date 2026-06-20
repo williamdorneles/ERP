@@ -7,6 +7,7 @@ import { Plus, Trash2, Calculator } from 'lucide-react'
 import { api } from '../../lib/api'
 import { FormField, Input, Select, Textarea } from '../ui/FormField'
 import { Button } from '../ui/Button'
+import { Form } from '../ui/Form'
 
 const ingredienteSchema = z.object({
   produtoId: z.string().min(1, 'Selecione o ingrediente'),
@@ -127,7 +128,7 @@ export function FichaTecnicaForm({ initialData, onSuccess, onCancel }: FichaTecn
   })
 
   return (
-    <form onSubmit={handleSubmit(d => mutation.mutate(d))} className="space-y-5">
+    <Form onSubmit={handleSubmit(d => mutation.mutate(d))} className="space-y-5">
       <div className="grid grid-cols-2 gap-4">
         <FormField label="Código">
           <input
@@ -298,6 +299,6 @@ export function FichaTecnicaForm({ initialData, onSuccess, onCancel }: FichaTecn
           {isEditing ? 'Salvar Alterações' : 'Salvar Ficha Técnica'}
         </Button>
       </div>
-    </form>
+    </Form>
   )
 }

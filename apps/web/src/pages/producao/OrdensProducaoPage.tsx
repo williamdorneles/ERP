@@ -10,6 +10,7 @@ import { OrdemProducaoForm, type OrdemProducaoData } from '../../components/form
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { FormField, Input, Textarea } from '../../components/ui/FormField'
 import { Button } from '../../components/ui/Button'
+import { Form } from '../../components/ui/Form'
 
 interface OrdemProducao {
   id: string; numero: string; status: string; turno: string
@@ -81,7 +82,7 @@ function ApontamentoForm({ ordem, onSuccess, onCancel }: {
   })
 
   return (
-    <form onSubmit={handleSubmit(d => mutation.mutate(d))} className="space-y-5">
+    <Form onSubmit={handleSubmit(d => mutation.mutate(d))} className="space-y-5">
       {/* Cabeçalho da OP */}
       <div className="bg-gray-50 rounded-lg border border-gray-200 p-4 space-y-3">
         <div className="flex justify-between text-sm">
@@ -172,7 +173,7 @@ function ApontamentoForm({ ordem, onSuccess, onCancel }: {
           Registrar Apontamento
         </Button>
       </div>
-    </form>
+    </Form>
   )
 }
 

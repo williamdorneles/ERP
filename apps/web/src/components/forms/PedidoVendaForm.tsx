@@ -6,6 +6,7 @@ import { Plus, Trash2 } from 'lucide-react'
 import { api } from '../../lib/api'
 import { FormField, Input, Select, Textarea, CurrencyInput } from '../ui/FormField'
 import { Button } from '../ui/Button'
+import { Form } from '../ui/Form'
 
 const itemSchema = z.object({
   produtoId: z.string().min(1, 'Selecione o produto'),
@@ -89,7 +90,7 @@ export function PedidoVendaForm({ onSuccess, onCancel }: PedidoVendaFormProps) {
   })
 
   return (
-    <form onSubmit={handleSubmit(d => mutation.mutate(d))} className="space-y-5">
+    <Form onSubmit={handleSubmit(d => mutation.mutate(d))} className="space-y-5">
       {/* Cabeçalho do pedido */}
       <div className="grid grid-cols-2 gap-4">
         <FormField label="Canal de Venda" error={errors.canal?.message} required>
@@ -267,6 +268,6 @@ export function PedidoVendaForm({ onSuccess, onCancel }: PedidoVendaFormProps) {
           Criar Pedido — R$ {Math.max(total, 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
         </Button>
       </div>
-    </form>
+    </Form>
   )
 }

@@ -4,6 +4,7 @@ import { Plus, ArrowLeft, ChevronRight, ChevronDown, Pencil, PowerOff, Power } f
 import { api } from '../../lib/api'
 import { FormField, Input, Select } from '../../components/ui/FormField'
 import { Button } from '../../components/ui/Button'
+import { Form } from '../../components/ui/Form'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import clsx from 'clsx'
 
@@ -170,7 +171,7 @@ function ContaForm({
       </div>
 
       <div className="bg-white rounded-xl border border-gray-200 p-6">
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <Form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <FormField label="Código" required={!editando} error={errors.codigo}>
               <Input
@@ -235,7 +236,7 @@ function ContaForm({
               {editando ? 'Salvar Alterações' : <><Plus size={16} /> Criar Conta</>}
             </Button>
           </div>
-        </form>
+        </Form>
       </div>
     </div>
   )

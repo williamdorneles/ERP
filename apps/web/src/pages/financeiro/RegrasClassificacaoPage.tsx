@@ -4,6 +4,7 @@ import { Plus, ArrowLeft, Edit2, Trash2, Zap, ChevronUp, ChevronDown, ToggleLeft
 import { api } from '../../lib/api'
 import { FormField, Input, Select } from '../../components/ui/FormField'
 import { Button } from '../../components/ui/Button'
+import { Form } from '../../components/ui/Form'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import clsx from 'clsx'
 
@@ -203,7 +204,7 @@ function RegraForm({
         </div>
       </div>
 
-      <form onSubmit={handleSubmit} className="space-y-4 max-w-2xl">
+      <Form onSubmit={handleSubmit} className="space-y-4 max-w-2xl">
         <div className="grid grid-cols-3 gap-4">
           <div className="col-span-2">
             <FormField label="Nome da regra" required error={errors.nome}>
@@ -346,7 +347,7 @@ function RegraForm({
             {regra ? 'Salvar alterações' : 'Criar regra'}
           </Button>
         </div>
-      </form>
+      </Form>
     </div>
   )
 }

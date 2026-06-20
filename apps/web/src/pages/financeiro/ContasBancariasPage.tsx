@@ -5,6 +5,7 @@ import { Plus, Pencil, Power, PowerOff, Landmark, Wallet, ExternalLink } from 'l
 import { api } from '../../lib/api'
 import { FormField, Input } from '../../components/ui/FormField'
 import { Button } from '../../components/ui/Button'
+import { Form } from '../../components/ui/Form'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import clsx from 'clsx'
 
@@ -90,7 +91,7 @@ function ContaForm({
       <h2 className="text-lg font-semibold text-gray-900 mb-4">
         {editando ? 'Editar Conta' : 'Nova Conta'}
       </h2>
-      <form onSubmit={handleSubmit} className="space-y-4">
+      <Form onSubmit={handleSubmit} className="space-y-4">
         <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg">
           <input
             type="checkbox" id="isCaixa" checked={form.isCaixa}
@@ -139,7 +140,7 @@ function ContaForm({
             {editando ? 'Salvar' : <><Plus size={16} /> Criar</>}
           </Button>
         </div>
-      </form>
+      </Form>
     </div>
   )
 }

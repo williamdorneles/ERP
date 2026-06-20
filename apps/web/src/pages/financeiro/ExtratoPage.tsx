@@ -5,6 +5,7 @@ import { ArrowLeft, Plus, SlidersHorizontal, TrendingUp, TrendingDown } from 'lu
 import { api } from '../../lib/api'
 import { FormField, Input, Select } from '../../components/ui/FormField'
 import { Button } from '../../components/ui/Button'
+import { Form } from '../../components/ui/Form'
 import clsx from 'clsx'
 
 interface ContaFinanceira { id: string; codigo: string; nome: string }
@@ -70,7 +71,7 @@ function ModalLancamento({
       <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-4">
         <h3 className="text-lg font-semibold text-gray-900">Novo Lançamento Manual</h3>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <Form onSubmit={handleSubmit} className="space-y-4">
           <div className="flex gap-2">
             {(['DEBITO', 'CREDITO'] as const).map(t => (
               <button
@@ -117,7 +118,7 @@ function ModalLancamento({
             <Button type="button" variant="secondary" className="flex-1" onClick={onClose}>Cancelar</Button>
             <Button type="submit" className="flex-1" loading={mutation.isPending}>Lançar</Button>
           </div>
-        </form>
+        </Form>
       </div>
     </div>
   )
@@ -158,7 +159,7 @@ function ModalAjuste({
         <h3 className="text-lg font-semibold text-gray-900">Ajuste de Saldo</h3>
         <p className="text-sm text-gray-500">Saldo atual: <strong>{fmt(saldoAtual)}</strong></p>
 
-        <form onSubmit={e => { e.preventDefault(); setErro(''); mutation.mutate() }} className="space-y-4">
+        <Form onSubmit={e => { e.preventDefault(); setErro(''); mutation.mutate() }} className="space-y-4">
           <FormField label="Saldo correto (R$)" required>
             <Input type="number" step="0.01" value={saldoDesejado} onChange={e => setSaldoDesejado(e.target.value)} />
           </FormField>
@@ -183,7 +184,7 @@ function ModalAjuste({
             <Button type="button" variant="secondary" className="flex-1" onClick={onClose}>Cancelar</Button>
             <Button type="submit" className="flex-1" loading={mutation.isPending}>Ajustar</Button>
           </div>
-        </form>
+        </Form>
       </div>
     </div>
   )

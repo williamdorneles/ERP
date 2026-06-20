@@ -19,6 +19,8 @@ const ItemSalvarSchema = z.object({
   quantidade: z.number().nonnegative(),
   valorUnitario: z.number().nonnegative(),
   valorTotal: z.number().nonnegative(),
+  fatorConversao: z.number().positive().optional().nullable(),
+  operacaoConversao: z.enum(['MULTIPLICAR', 'DIVIDIR']).optional().nullable(),
 })
 
 const ParcelaSchema = z.object({
@@ -66,6 +68,17 @@ const SalvarNfSchema = z.object({
   itens: z.array(ItemSalvarSchema).min(1),
   parcelas: z.array(ParcelaSchema).default([]),
   xmlOriginal: z.string().optional(),
+  // Dados completos do emitente para cadastro do fornecedor
+  emitenteRazaoSocial: z.string().optional().nullable(),
+  emitenteNomeFant: z.string().optional().nullable(),
+  emitenteIE: z.string().optional().nullable(),
+  emitenteFone: z.string().optional().nullable(),
+  emitenteEnderLgr: z.string().optional().nullable(),
+  emitenteEnderNro: z.string().optional().nullable(),
+  emitenteEnderBairro: z.string().optional().nullable(),
+  emitenteEnderMun: z.string().optional().nullable(),
+  emitenteEnderUF: z.string().optional().nullable(),
+  emitenteEnderCEP: z.string().optional().nullable(),
 })
 
 const FormarCustoSchema = z.object({
@@ -88,23 +101,12 @@ function mapUnidade(u: string) {
   return 'UN'
 }
 
-async function autoMatchProduto(cProd: string, ncm: string, fornecedorId: string | null) {
-  if (cProd) {
-    const p = await prisma.produto.findFirst({
-      where: { codigoFornecedor: cProd, ativo: true, ...(fornecedorId ? { fornecedorId } : {}) },
-      select: SELECT_PRODUTO,
-    })
-    if (p) return p
-  }
-  if (cProd) {
-    const p = await prisma.produto.findFirst({ where: { codigo: cProd, ativo: true }, select: SELECT_PRODUTO })
-    if (p) return p
-  }
-  if (ncm) {
-    const p = await prisma.produto.findFirst({ where: { ncm, ativo: true }, select: SELECT_PRODUTO })
-    if (p) return p
-  }
-  return null
+async function autoMatchProduto(cProd: string, fornecedorId: string | null) {
+  if (!cProd || !fornecedorId) return null
+  return prisma.produto.findFirst({
+    where: { codigoFornecedor: cProd, fornecedorId, ativo: true },
+    select: SELECT_PRODUTO,
+  })
 }
 
 // ── Rotas ─────────────────────────────────────────────────────────────────────
@@ -132,7 +134,7 @@ export async function nfEntradaRoutes(app: FastifyInstance) {
 
       const itensComProduto = await Promise.all(
         parsed.itens.map(async item => {
-          const produto = await autoMatchProduto(item.cProd, item.ncm, fornecedor?.id ?? null)
+          const produto = await autoMatchProduto(item.cProd, fornecedor?.id ?? null)
           return { ...item, produtoId: produto?.id ?? null, produtoNovo: false, produto }
         }),
       )
@@ -242,8 +244,17 @@ export async function nfEntradaRoutes(app: FastifyInstance) {
             codigo: proximoCodigo,
             tipo: 'FORNECEDOR',
             tipoLegal: cnpjLimpo.length === 14 ? 'PJ' : 'PF',
-            nome: data.fornecedorNome,
+            nome: data.emitenteRazaoSocial || data.fornecedorNome,
+            nomeFantasia: data.emitenteNomeFant || null,
             documento: cnpjLimpo,
+            ie: data.emitenteIE || null,
+            telefone: data.emitenteFone || null,
+            logradouro: data.emitenteEnderLgr || null,
+            numero: data.emitenteEnderNro || null,
+            bairro: data.emitenteEnderBairro || null,
+            municipio: data.emitenteEnderMun || null,
+            uf: data.emitenteEnderUF || null,
+            cep: data.emitenteEnderCEP?.replace(/\D/g, '') || null,
           },
         })
         fornecedorId = novo.id
@@ -290,6 +301,8 @@ export async function nfEntradaRoutes(app: FastifyInstance) {
       valorTotal: i.valorTotal,
       produtoId: i.produtoId || null,
       produtoNovo: i.produtoNovo ?? false,
+      fatorConversao: i.fatorConversao ?? null,
+      operacaoConversao: i.operacaoConversao ?? null,
     }))
 
     let nfId: string
@@ -352,6 +365,8 @@ export async function nfEntradaRoutes(app: FastifyInstance) {
             custoUnitario: Number(item.valorUnitario),
             fornecedorId: nf.fornecedorId ?? null,
             codigoFornecedor: item.cProd ?? null,
+            fatorConversao: item.fatorConversao ?? null,
+            operacaoConversao: (item.operacaoConversao as never) ?? null,
           },
         })
 
@@ -369,7 +384,7 @@ export async function nfEntradaRoutes(app: FastifyInstance) {
       const produtoIds = itensComProduto.map(i => i.produtoId!)
       const produtos = await tx.produto.findMany({
         where: { id: { in: produtoIds } },
-        select: { id: true, estoqueAtual: true, custoMedio: true, ultimoCusto: true },
+        select: { id: true, estoqueAtual: true, custoMedio: true, ultimoCusto: true, fatorConversao: true, operacaoConversao: true },
       })
       const produtoMap = new Map(produtos.map(p => [p.id, p]))
 
@@ -378,12 +393,21 @@ export async function nfEntradaRoutes(app: FastifyInstance) {
         const prod = produtoMap.get(item.produtoId!)
         if (!prod) continue
 
+        // Aplica conversão de unidade se configurada no produto
+        const fator = prod.fatorConversao ? Number(prod.fatorConversao) : 1
+        const op = prod.operacaoConversao
+        const qtdeNf = Number(item.quantidade)
+        const qtdeEstoque = (op === 'MULTIPLICAR') ? qtdeNf * fator
+          : (op === 'DIVIDIR') ? qtdeNf / fator
+          : qtdeNf
+        const valorTotal = Number(item.valorTotal)
+        const novoCusto = +(qtdeEstoque > 0 ? valorTotal / qtdeEstoque : Number(item.valorUnitario)).toFixed(4)
+
         const estoqueAtual = Number(prod.estoqueAtual)
         const custoMedioAtual = Number(prod.custoMedio)
-        const novoCusto = Number(item.valorUnitario)
-        const novoEstoque = estoqueAtual + Number(item.quantidade)
+        const novoEstoque = estoqueAtual + qtdeEstoque
         const novoCustoMedio = novoEstoque > 0
-          ? (estoqueAtual * custoMedioAtual + Number(item.quantidade) * novoCusto) / novoEstoque
+          ? (estoqueAtual * custoMedioAtual + qtdeEstoque * novoCusto) / novoEstoque
           : novoCusto
         const custoAtivo = metodo === 'ULTIMO' ? novoCusto : novoCustoMedio
 
@@ -392,7 +416,7 @@ export async function nfEntradaRoutes(app: FastifyInstance) {
             produtoId: item.produtoId!,
             nfEntradaId: id,
             tipo: 'ENTRADA',
-            quantidade: item.quantidade,
+            quantidade: +qtdeEstoque.toFixed(4),
             custoUnitario: novoCusto,
             observacao: `NF ${nf.numero || id} — ${item.descricao}`,
           },
@@ -401,7 +425,7 @@ export async function nfEntradaRoutes(app: FastifyInstance) {
         await tx.produto.update({
           where: { id: item.produtoId! },
           data: {
-            estoqueAtual: { increment: item.quantidade },
+            estoqueAtual: { increment: +qtdeEstoque.toFixed(4) },
             ultimoCusto: novoCusto,
             custoMedio: +novoCustoMedio.toFixed(4),
             custoUnitario: +custoAtivo.toFixed(4),
@@ -510,16 +534,43 @@ export async function nfEntradaRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: 'Nenhum produto vinculado na nota.' })
     }
 
+    const produtoIds = nf.itens.map(i => i.produtoId!)
+    const produtos = await prisma.produto.findMany({
+      where: { id: { in: produtoIds } },
+      select: { id: true, fatorConversao: true, operacaoConversao: true },
+    })
+    const produtoMap = new Map(produtos.map(p => [p.id, p]))
+
     await prisma.$transaction(async (tx) => {
       for (const item of nf.itens) {
         if (!item.produtoId) continue
+        const prod = produtoMap.get(item.produtoId)
+        const fator = prod?.fatorConversao ? Number(prod.fatorConversao) : 1
+        const op = prod?.operacaoConversao
+        const qtdeNf = Number(item.quantidade)
+        const qtdeEstoque = op === 'MULTIPLICAR' ? qtdeNf * fator
+          : op === 'DIVIDIR' ? qtdeNf / fator
+          : qtdeNf
+
         const participacao = Number(item.valorTotal) / totalProdutos
         const adicionalItem = totalAdicional * participacao
-        const custoNovo = Number(item.valorUnitario) + adicionalItem / Number(item.quantidade)
+        const custoNovo = qtdeEstoque > 0
+          ? (Number(item.valorTotal) + adicionalItem) / qtdeEstoque
+          : Number(item.valorUnitario)
 
         await tx.produto.update({
           where: { id: item.produtoId },
           data: { ultimoCusto: +custoNovo.toFixed(4), custoUnitario: +custoNovo.toFixed(4) },
+        })
+
+        await tx.produtoCusto.create({
+          data: {
+            produtoId:   item.produtoId,
+            custo:       +custoNovo.toFixed(4),
+            motivo:      'FORMACAO_CUSTO',
+            nfEntradaId: id,
+            observacao:  `Formação de custo NF ${nf.numero || id}`,
+          },
         })
       }
       await tx.nfEntrada.update({ where: { id }, data: { custoFormado: true } })
@@ -539,7 +590,7 @@ export async function nfEntradaRoutes(app: FastifyInstance) {
       include: {
         itens: {
           where: { produtoId: { not: null } },
-          include: { produto: { select: { id: true, codigo: true, nome: true, custoUnitario: true, custoMedio: true, ultimoCusto: true } } },
+          include: { produto: { select: { id: true, codigo: true, nome: true, custoUnitario: true, custoMedio: true, ultimoCusto: true, fatorConversao: true, operacaoConversao: true } } },
         },
       },
     })
@@ -549,13 +600,23 @@ export async function nfEntradaRoutes(app: FastifyInstance) {
     const totalProdutos = nf.itens.reduce((s, i) => s + Number(i.valorTotal), 0)
 
     const itens = nf.itens.map(item => {
+      const fator = item.produto?.fatorConversao ? Number(item.produto.fatorConversao) : 1
+      const op = item.produto?.operacaoConversao
+      const qtdeNf = Number(item.quantidade)
+      const qtdeEstoque = op === 'MULTIPLICAR' ? qtdeNf * fator
+        : op === 'DIVIDIR' ? qtdeNf / fator
+        : qtdeNf
+
       const participacao = totalProdutos > 0 ? Number(item.valorTotal) / totalProdutos : 0
       const adicionalItem = totalAdicional * participacao
-      const custoNovo = Number(item.valorUnitario) + adicionalItem / Number(item.quantidade)
+      const custoNovo = qtdeEstoque > 0
+        ? (Number(item.valorTotal) + adicionalItem) / qtdeEstoque
+        : Number(item.valorUnitario)
       return {
         id: item.id,
         descricao: item.descricao,
         quantidade: Number(item.quantidade),
+        qtdeEstoque: +qtdeEstoque.toFixed(4),
         valorTotal: Number(item.valorTotal),
         adicionalRateado: +adicionalItem.toFixed(4),
         custoAtual: Number(item.produto?.custoUnitario ?? 0),
@@ -638,7 +699,7 @@ export async function nfEntradaRoutes(app: FastifyInstance) {
 
         const itensComProduto = await Promise.all(
           parsed.itens.map(async item => {
-            const produto = await autoMatchProduto(item.cProd, item.ncm, fornecedor?.id ?? null)
+            const produto = await autoMatchProduto(item.cProd, fornecedor?.id ?? null)
             return { ...item, produtoId: produto?.id ?? null, produtoNovo: false, produto }
           }),
         )
@@ -711,6 +772,16 @@ export async function nfEntradaRoutes(app: FastifyInstance) {
             estoqueAtual: { decrement: item.quantidade },
             ultimoCusto: +custoAnterior.toFixed(4),
             custoUnitario: +custoAnterior.toFixed(4),
+          },
+        })
+
+        await tx.produtoCusto.create({
+          data: {
+            produtoId:   item.produtoId,
+            custo:       +custoAnterior.toFixed(4),
+            motivo:      'ESTORNO_NF',
+            nfEntradaId: id,
+            observacao:  `Estorno NF ${nf.numero || id}`,
           },
         })
       }

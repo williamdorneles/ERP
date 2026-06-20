@@ -1,10 +1,10 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Upload, Plus, CheckCircle2, XCircle, FileText,
   Package, AlertTriangle, Trash2, RotateCcw,
-  Cloud, X, ArrowLeft, Boxes, Wallet, Calculator, Loader2,
+  Cloud, X, ArrowLeft, Boxes, Wallet, Calculator, Loader2, Pencil,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { api } from '../../lib/api'
@@ -12,7 +12,7 @@ import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
 
-interface Produto { id: string; codigo: string; nome: string; unidadeMedida: string; custoUnitario: number }
+interface Produto { id: string; codigo: string; nome: string; unidadeMedida: string; custoUnitario: number; fatorConversao?: number | null; operacaoConversao?: 'MULTIPLICAR' | 'DIVIDIR' | null }
 interface Pessoa { id: string; nome: string; documento: string }
 interface ContaBancaria { id: string; nome: string; banco?: string; isCaixa: boolean }
 
@@ -22,6 +22,8 @@ interface ItemForm {
   produtoId: string | null
   produtoNovo: boolean
   produto?: Produto | null
+  fatorConversao?: number | null
+  operacaoConversao?: 'MULTIPLICAR' | 'DIVIDIR' | null
 }
 type EnvioPara = 'PRAZO' | 'CAIXA' | 'CONTA'
 
@@ -52,7 +54,7 @@ interface NfHeader {
 
 interface NfEntradaLista {
   id: string; numero: string | null; serie: string | null
-  dataEntrada: string; fornecedorNome: string
+  dataEmissao: string; dataEntrada: string; fornecedorNome: string
   totalNf: number; vFrete: number; status: string
   estoqueElancado: boolean; financeiroLancado: boolean; custoFormado: boolean
   parcelasJson: string | null
@@ -62,9 +64,14 @@ interface NfEntradaLista {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-const fmt = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
-const fmtDate = (s: string) => s ? new Date(s + 'T12:00:00').toLocaleDateString('pt-BR') : '—'
+const fmt = (v: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v)
+const fmtDate = (s: string) => s ? new Date(s.slice(0, 10) + 'T12:00:00').toLocaleDateString('pt-BR') : '—'
 const today = () => new Date().toISOString().split('T')[0]
+const fmtCnpj = (s: string) => { const d = s.replace(/\D/g, ''); return d.length === 14 ? d.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/, '$1.$2.$3/$4-$5') : d }
+const fmtCep  = (s: string) => { const d = s.replace(/\D/g, ''); return d.length === 8 ? d.replace(/(\d{5})(\d{3})/, '$1-$2') : d }
+const crtLabels: Record<string, string> = { '1': 'Simples Nacional', '2': 'Simples Nacional – excesso', '3': 'Regime Normal', '4': 'MEI' }
+const numBR = (v: number, d = 2) => (v || 0).toFixed(d).replace('.', ',')
+const parseNumBR = (s: string) => { const c = s.trim(); return c.includes(',') ? parseFloat(c.replace(/\./g, '').replace(',', '.')) || 0 : parseFloat(c) || 0 }
 
 function mapUnidade(u: string): string {
   const v = u.toUpperCase()
@@ -273,7 +280,9 @@ function FormNfEntrada({
     totalNf: inicial?.totalNf ?? 0,
     contaFinanceiraId: (inicial as Record<string, unknown>)?.contaFinanceiraId as string ?? null,
   })
-  const [itens, setItens] = useState<ItemForm[]>(inicial?.itens ?? [])
+  const [itens, setItens] = useState<ItemForm[]>(
+    (inicial?.itens ?? []).map(i => ({ ...i, produtoNovo: i.produtoNovo || !i.produtoId }))
+  )
 
   // Converte duplicatas do XML para ParcelaForm com defaults
   const duplicatasIniciais = inicial?.duplicatas ?? []
@@ -284,6 +293,9 @@ function FormNfEntrada({
   )
   const [condicaoPagamento, setCondicaoPagamento] = useState('')
   const [erro, setErro] = useState('')
+  const [itemEditIdx, setItemEditIdx] = useState<number | null>(null)
+  const [drawerConversao, setDrawerConversao] = useState<{ operacao: 'MULTIPLICAR' | 'DIVIDIR'; fator: string }>({ operacao: 'MULTIPLICAR', fator: '' })
+  const [salvandoConversao, setSalvandoConversao] = useState(false)
 
   const { data: pessoas } = useQuery<Pessoa[]>({
     queryKey: ['pessoas-lista'],
@@ -311,6 +323,16 @@ function FormNfEntrada({
       itens: itens.map(i => ({ ...i, produtoId: i.produtoId || null })),
       parcelas,
       xmlOriginal: (inicial as Record<string, unknown>)?.xmlOriginal as string | undefined,
+      emitenteRazaoSocial: String(_init?.emitenteRazaoSocial || ''),
+      emitenteNomeFant: String(_init?.emitenteNomeFant || ''),
+      emitenteIE: String(_init?.emitenteIE || ''),
+      emitenteFone: String(_init?.emitenteFone || ''),
+      emitenteEnderLgr: String(_init?.emitenteEnderLgr || ''),
+      emitenteEnderNro: String(_init?.emitenteEnderNro || ''),
+      emitenteEnderBairro: String(_init?.emitenteEnderBairro || ''),
+      emitenteEnderMun: String(_init?.emitenteEnderMun || ''),
+      emitenteEnderUF: String(_init?.emitenteEnderUF || ''),
+      emitenteEnderCEP: String(_init?.emitenteEnderCEP || ''),
     }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['nf-entradas'] })
@@ -402,12 +424,20 @@ function FormNfEntrada({
   }
 
   function inputNum(campo: keyof NfHeader, label: string) {
+    const v = (header[campo] as number) || 0
     return (
       <div>
         <label className="block text-xs font-medium text-gray-600 mb-1">{label}</label>
-        <input type="number" step="0.01" min="0"
-          value={(header[campo] as number) || 0}
-          onChange={e => setNum(campo, Number(e.target.value))}
+        <input
+          key={numBR(v)}
+          type="text"
+          inputMode="decimal"
+          defaultValue={numBR(v)}
+          onBlur={e => {
+            const n = parseNumBR(e.target.value)
+            setNum(campo, n)
+            e.target.value = numBR(n)
+          }}
           className="w-full border rounded-lg px-3 py-2 text-sm text-right focus:ring-2 focus:ring-primary-500 focus:border-transparent"
         />
       </div>
@@ -421,11 +451,58 @@ function FormNfEntrada({
   const pessoasList = pessoas ?? []
   const produtosList = produtos ?? []
 
+  // Fórmula vNF conforme SEFAZ (PIS/COFINS já estão no preço dos produtos)
   const totalNfCalculado = +(
     totalItens - header.vDesc + header.vFrete + header.vSeg + header.vOutro +
-    header.vII + header.vIPI - header.vIPIDevol + header.vST +
-    header.vPIS + header.vCOFINS - header.vICMSDeson + header.vFCP + header.vFCPST
+    header.vII + header.vIPI - header.vIPIDevol + header.vST - header.vICMSDeson +
+    header.vFCP + header.vFCPST
   ).toFixed(2)
+
+  // Extrai dados completos da tag <emit> do XML parseado
+  const _init = inicial as Record<string, unknown>
+  const emitenteRazao   = String(_init?.emitenteRazaoSocial || '')
+  const emitenteFant    = String(_init?.emitenteNomeFant    || '')
+  const emitenteIE      = String(_init?.emitenteIE          || '')
+  const emitenteCRT     = String(_init?.emitenteCRT         || '')
+  const emitenteEnder   = [
+    _init?.emitenteEnderLgr
+      ? `${_init.emitenteEnderLgr}${_init.emitenteEnderNro ? `, ${_init.emitenteEnderNro}` : ''}`
+      : null,
+    _init?.emitenteEnderBairro || null,
+    _init?.emitenteEnderMun && _init?.emitenteEnderUF
+      ? `${_init.emitenteEnderMun}/${_init.emitenteEnderUF}`
+      : null,
+    _init?.emitenteEnderCEP ? fmtCep(String(_init.emitenteEnderCEP)) : null,
+  ].filter(Boolean).join(' — ')
+  const emitenteFone    = String(_init?.emitenteFone || '')
+  const temEmitente     = !!emitenteRazao
+
+  // Sincroniza única parcela com valor 0 quando o total da NF é conhecido
+  useEffect(() => {
+    const total = header.totalNf || totalNfCalculado
+    if (total > 0 && parcelas.length === 1 && parcelas[0].valor === 0) {
+      setParcelas(prev => [{ ...prev[0], valor: +total.toFixed(2) }])
+    }
+  }, [header.totalNf, totalNfCalculado, parcelas])
+
+  // Inicializa campos de conversão ao abrir o drawer
+  useEffect(() => {
+    if (itemEditIdx === null) return
+    const item = itens[itemEditIdx]
+    const prod = item?.produtoId ? produtosList.find(p => p.id === item.produtoId) : null
+    if (prod) {
+      setDrawerConversao({
+        operacao: prod.operacaoConversao ?? 'MULTIPLICAR',
+        fator: prod.fatorConversao != null ? String(prod.fatorConversao) : '',
+      })
+    } else {
+      setDrawerConversao({
+        operacao: item?.operacaoConversao ?? 'MULTIPLICAR',
+        fator: item?.fatorConversao != null ? String(item.fatorConversao) : '',
+      })
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [itemEditIdx, itens[itemEditIdx ?? -1]?.produtoId])
 
   return (
     <div className="space-y-6">
@@ -465,6 +542,31 @@ function FormNfEntrada({
               className="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary-500 focus:border-transparent" />
           </div>
         </div>
+        {temEmitente && (
+          <div className="mt-3 bg-gray-50 border border-gray-200 rounded-lg px-4 py-3 text-xs space-y-1">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-1">Dados do Emitente (XML)</p>
+            <p className="font-semibold text-gray-800 text-sm">{emitenteFant || emitenteRazao}</p>
+            {emitenteFant && <p className="text-gray-500">{emitenteRazao}</p>}
+            <div className="flex flex-wrap gap-x-5 gap-y-0.5 text-gray-600 mt-0.5">
+              {header.fornecedorCnpj && (
+                <span>CNPJ: <span className="font-mono">{fmtCnpj(header.fornecedorCnpj)}</span></span>
+              )}
+              {emitenteIE && emitenteIE !== 'ISENTO' && (
+                <span>IE: <span className="font-mono">{emitenteIE}</span></span>
+              )}
+              {emitenteCRT && (
+                <span>CRT {emitenteCRT}: {crtLabels[emitenteCRT] ?? emitenteCRT}</span>
+              )}
+              {emitenteFone && (
+                <span>Fone: {emitenteFone}</span>
+              )}
+            </div>
+            {emitenteEnder && (
+              <p className="text-gray-500">{emitenteEnder}</p>
+            )}
+          </div>
+        )}
+
         <FornecedorInput
           pessoasList={pessoasList}
           fornecedorId={header.fornecedorId ?? null}
@@ -516,11 +618,6 @@ function FormNfEntrada({
                         onChange={e => atualizarItem(idx, 'descricao', e.target.value)}
                         className="w-full border border-gray-200 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-primary-500 focus:border-primary-400 text-gray-900 placeholder-gray-300"
                         placeholder="Descrição do produto" />
-                      {(item.ncm || item.cfop) && (
-                        <p className="text-gray-400 mt-0.5">
-                          {item.ncm && `NCM ${item.ncm}`}{item.ncm && item.cfop && ' · '}{item.cfop && `CFOP ${item.cfop}`}
-                        </p>
-                      )}
                     </td>
                     <td className="px-2 py-2">
                       {item.produtoNovo ? (
@@ -570,12 +667,19 @@ function FormNfEntrada({
                     <td className="px-2 py-2 text-right font-mono text-gray-900">
                       {item.valorTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                     </td>
-                    <td className="px-2 py-2 text-right">
-                      <button type="button"
-                        onClick={() => setItens(prev => prev.filter((_, i) => i !== idx))}
-                        className="text-xs text-gray-300 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity">
-                        remover
-                      </button>
+                    <td className="px-2 py-2">
+                      <div className="flex items-center justify-end gap-0.5">
+                        <button type="button" title="Editar item"
+                          onClick={() => setItemEditIdx(idx)}
+                          className="p-1.5 text-gray-400 hover:text-primary-600 hover:bg-primary-50 rounded transition">
+                          <Pencil size={13} />
+                        </button>
+                        <button type="button" title="Remover item"
+                          onClick={() => setItens(prev => prev.filter((_, i) => i !== idx))}
+                          className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded transition">
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 )
@@ -703,8 +807,16 @@ function FormNfEntrada({
                     />
                   </td>
                   <td className="px-2 py-2">
-                    <input type="number" step="0.01" value={p.valor}
-                      onChange={e => atualizarParcela(idx, 'valor', Number(e.target.value))}
+                    <input
+                      key={numBR(p.valor)}
+                      type="text"
+                      inputMode="decimal"
+                      defaultValue={numBR(p.valor)}
+                      onBlur={e => {
+                        const n = parseNumBR(e.target.value)
+                        atualizarParcela(idx, 'valor', n)
+                        e.target.value = numBR(n)
+                      }}
                       className="w-full text-right border rounded px-1 py-1 focus:ring-1 focus:ring-primary-500"
                     />
                   </td>
@@ -772,7 +884,7 @@ function FormNfEntrada({
                 </td>
                 <td className="px-2 py-2 text-right font-semibold text-gray-700">
                   {fmt(totalParcelas)}
-                  {Math.abs(totalParcelas - header.totalNf) > 0.01 && header.totalNf > 0 && (
+                  {Math.abs(totalParcelas - (header.totalNf || totalNfCalculado)) > 0.01 && (
                     <span className="ml-1 text-red-500 font-normal">≠ NF</span>
                   )}
                 </td>
@@ -802,7 +914,7 @@ function FormNfEntrada({
             <tr className="bg-gray-50 border-t-2">
               <td className="px-4 py-3 font-semibold text-gray-700">
                 Total NF
-                {Math.abs(totalNfCalculado - header.totalNf) > 0.02 && header.totalNf > 0 && (
+                {Math.abs(totalNfCalculado - (header.totalNf || totalNfCalculado)) > 0.02 && (
                   <span className="ml-2 text-xs font-normal text-amber-600">
                     · calculado: {fmt(totalNfCalculado)}
                     <button type="button" onClick={() => setHeader(h => ({ ...h, totalNf: totalNfCalculado }))}
@@ -811,12 +923,21 @@ function FormNfEntrada({
                 )}
               </td>
               <td className="px-4 py-3 text-right">
-                <input type="number" step="0.01"
-                  value={header.totalNf || ''}
-                  onChange={e => setHeader(h => ({ ...h, totalNf: Number(e.target.value) }))}
-                  placeholder={fmt(totalNfCalculado)}
-                  className="w-40 border rounded-lg px-3 py-1.5 text-right font-semibold text-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                />
+                <div className="inline-flex items-center gap-1">
+                  <span className="text-gray-400 text-sm font-medium">R$</span>
+                  <input
+                    key={numBR(header.totalNf || totalNfCalculado)}
+                    type="text"
+                    inputMode="decimal"
+                    defaultValue={numBR(header.totalNf || totalNfCalculado)}
+                    onBlur={e => {
+                      const n = parseNumBR(e.target.value)
+                      setHeader(h => ({ ...h, totalNf: n }))
+                      e.target.value = numBR(n)
+                    }}
+                    className="w-36 border rounded-lg px-3 py-1.5 text-right font-semibold text-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  />
+                </div>
               </td>
             </tr>
           </tfoot>
@@ -849,6 +970,218 @@ function FormNfEntrada({
           </button>
         )}
       </div>
+
+      {/* Drawer lateral — detalhe do item */}
+      {itemEditIdx !== null && (() => {
+        const item = itens[itemEditIdx]
+        if (!item) return null
+        const produtoVinculado = produtosList.find(p => p.id === item.produtoId)
+        return createPortal(
+          <div className="fixed inset-0 z-50 flex justify-end">
+            <div className="absolute inset-0 bg-black/25" onClick={() => setItemEditIdx(null)} />
+            <div className="relative w-80 bg-white shadow-2xl flex flex-col border-l border-gray-200">
+              {/* Cabeçalho */}
+              <div className="flex items-start justify-between gap-3 px-4 py-3 border-b bg-gray-50">
+                <div className="min-w-0">
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Item {item.nItem}</p>
+                  <p className="text-sm font-semibold text-gray-800 truncate">{item.descricao}</p>
+                </div>
+                <button onClick={() => setItemEditIdx(null)}
+                  className="shrink-0 p-1 rounded hover:bg-gray-200 text-gray-500 transition">
+                  <X size={15} />
+                </button>
+              </div>
+
+              {/* Conteúdo */}
+              <div className="flex-1 overflow-y-auto p-4 space-y-5">
+
+                {/* Produto vinculado */}
+                <div>
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-2">Produto no cadastro</p>
+                  {item.produtoNovo ? (
+                    <div className="flex items-center gap-2">
+                      <span className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 border border-blue-200 rounded px-2 py-1 text-xs font-medium">
+                        <Plus size={11} /> Cadastrar como novo produto
+                      </span>
+                      <button type="button" onClick={() => atualizarItem(itemEditIdx, 'produtoNovo', false)}
+                        className="text-xs text-gray-400 hover:text-gray-600 underline">desfazer</button>
+                    </div>
+                  ) : produtoVinculado ? (
+                    <div className="flex items-center justify-between bg-green-50 border border-green-200 rounded-lg px-3 py-2">
+                      <div>
+                        <p className="text-xs font-semibold text-green-800">{produtoVinculado.nome}</p>
+                        <p className="text-[10px] text-green-600 font-mono">{produtoVinculado.codigo}</p>
+                      </div>
+                      <button type="button" onClick={() => atualizarItem(itemEditIdx, 'produtoId', null)}
+                        className="text-xs text-green-500 hover:text-red-500 transition">×</button>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      <ProdutoSelector
+                        item={item}
+                        produtos={produtosList}
+                        onChange={pid => atualizarItem(itemEditIdx, 'produtoId', pid)}
+                        onNovoProduto={() => {
+                          atualizarItem(itemEditIdx, 'produtoNovo', true)
+                          atualizarItem(itemEditIdx, 'produtoId', null)
+                        }}
+                      />
+                      <button type="button"
+                        onClick={() => { atualizarItem(itemEditIdx, 'produtoNovo', true); atualizarItem(itemEditIdx, 'produtoId', null) }}
+                        className="text-xs text-blue-600 hover:text-blue-700 underline">
+                        + Cadastrar como novo produto
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Conversão de unidade (editável quando produto vinculado ou novo) */}
+                {(produtoVinculado || item.produtoNovo) && (() => {
+                  const fatorNum = parseFloat(drawerConversao.fator)
+                  const temFator = !isNaN(fatorNum) && fatorNum > 0
+                  const qtdeNf = item.quantidade
+                  const qtdeEst = temFator
+                    ? (drawerConversao.operacao === 'MULTIPLICAR' ? qtdeNf * fatorNum : qtdeNf / fatorNum)
+                    : null
+                  const unidade = produtoVinculado?.unidadeMedida ?? mapUnidade(item.unidade ?? 'UN')
+                  const custoConv = qtdeEst && qtdeEst > 0 && item.valorTotal > 0 ? item.valorTotal / qtdeEst : null
+                  const simbolo = drawerConversao.operacao === 'MULTIPLICAR' ? '×' : '÷'
+
+                  const origemFator = produtoVinculado
+                    ? (produtoVinculado.fatorConversao != null ? String(produtoVinculado.fatorConversao) : '')
+                    : (item.fatorConversao != null ? String(item.fatorConversao) : '')
+                  const origemOp = produtoVinculado
+                    ? (produtoVinculado.operacaoConversao ?? null)
+                    : (item.operacaoConversao ?? null)
+                  const alterado = drawerConversao.fator !== origemFator || (temFator && drawerConversao.operacao !== origemOp)
+
+                  const salvarConversao = async () => {
+                    if (produtoVinculado) {
+                      setSalvandoConversao(true)
+                      try {
+                        await api.patch(`/produtos/${produtoVinculado.id}`, {
+                          fatorConversao: fatorNum,
+                          operacaoConversao: drawerConversao.operacao,
+                        })
+                        await qc.invalidateQueries({ queryKey: ['produtos-estoque'] })
+                      } finally {
+                        setSalvandoConversao(false)
+                      }
+                    } else {
+                      // Produto novo: guarda no item para ser salvo junto com a NF
+                      atualizarItem(itemEditIdx, 'fatorConversao', fatorNum)
+                      atualizarItem(itemEditIdx, 'operacaoConversao', drawerConversao.operacao)
+                    }
+                  }
+
+                  return (
+                    <div className="space-y-2">
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Conversão de unidade</p>
+                      <div className="flex gap-2">
+                        <select
+                          value={drawerConversao.operacao}
+                          onChange={e => setDrawerConversao(prev => ({ ...prev, operacao: e.target.value as 'MULTIPLICAR' | 'DIVIDIR' }))}
+                          className="border border-gray-200 rounded-lg px-2 py-1.5 text-xs bg-white"
+                        >
+                          <option value="MULTIPLICAR">Multiplicar (×)</option>
+                          <option value="DIVIDIR">Dividir (÷)</option>
+                        </select>
+                        <input
+                          type="number" min="0.0001" step="any"
+                          placeholder="Fator"
+                          value={drawerConversao.fator}
+                          onChange={e => setDrawerConversao(prev => ({ ...prev, fator: e.target.value }))}
+                          className="w-24 border border-gray-200 rounded-lg px-2 py-1.5 text-xs font-mono"
+                        />
+                        {alterado && temFator && (
+                          <button
+                            type="button"
+                            disabled={salvandoConversao}
+                            onClick={salvarConversao}
+                            className="px-2 py-1.5 text-xs bg-amber-500 hover:bg-amber-600 text-white rounded-lg transition disabled:opacity-50"
+                          >
+                            {salvandoConversao ? '...' : 'Aplicar'}
+                          </button>
+                        )}
+                      </div>
+                      {temFator && qtdeEst !== null && (
+                        <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs space-y-0.5">
+                          <p className="text-amber-800 font-mono">
+                            {qtdeNf} {simbolo} {fatorNum} = <strong>{+qtdeEst.toFixed(4)}</strong> {unidade}
+                          </p>
+                          {custoConv !== null && (
+                            <p className="text-amber-600">Custo unitário: {fmt(custoConv)}/{unidade}</p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })()}
+
+                {/* Dados fiscais */}
+                <div>
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-2">Dados Fiscais</p>
+                  <div className="space-y-3">
+                    {item.cProd && (
+                      <div>
+                        <label className="block text-xs font-medium text-gray-600 mb-1">Cód. do fornecedor</label>
+                        <input readOnly value={item.cProd}
+                          className="w-full border border-gray-200 rounded-lg px-3 py-1.5 text-sm bg-gray-50 font-mono text-gray-500 cursor-default" />
+                      </div>
+                    )}
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">NCM</label>
+                      <input type="text" value={item.ncm}
+                        onChange={e => atualizarItem(itemEditIdx, 'ncm', e.target.value)}
+                        maxLength={8} placeholder="00000000"
+                        className="w-full border rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-primary-500 focus:border-transparent font-mono" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">CFOP</label>
+                      <input type="text" value={item.cfop}
+                        onChange={e => atualizarItem(itemEditIdx, 'cfop', e.target.value)}
+                        maxLength={4} placeholder="0000"
+                        className="w-full border rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-primary-500 focus:border-transparent font-mono" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Unidade Comercial</label>
+                      <input type="text" value={item.unidade}
+                        onChange={e => atualizarItem(itemEditIdx, 'unidade', e.target.value)}
+                        className="w-full border rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-primary-500 focus:border-transparent" />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Valores */}
+                <div>
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-2">Valores</p>
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-xs font-medium text-gray-600 mb-1">Quantidade</label>
+                        <input type="number" step="0.001" value={item.quantidade}
+                          onChange={e => atualizarItem(itemEditIdx, 'quantidade', Number(e.target.value))}
+                          className="w-full border rounded-lg px-3 py-1.5 text-sm text-right focus:ring-2 focus:ring-primary-500 focus:border-transparent" />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-gray-600 mb-1">Preço unitário</label>
+                        <input type="number" step="0.0001" value={item.valorUnitario}
+                          onChange={e => atualizarItem(itemEditIdx, 'valorUnitario', Number(e.target.value))}
+                          className="w-full border rounded-lg px-3 py-1.5 text-sm text-right focus:ring-2 focus:ring-primary-500 focus:border-transparent" />
+                      </div>
+                    </div>
+                    <div className="flex justify-between items-center pt-1 border-t border-gray-100 text-sm">
+                      <span className="text-gray-500">Total do item</span>
+                      <span className="font-semibold text-gray-800 tabular-nums">{fmt(item.valorTotal)}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )
+      })()}
     </div>
   )
 }
@@ -1079,6 +1412,8 @@ export function NfEntradaPage() {
           quantidade: Number(i.quantidade), valorUnitario: Number(i.valorUnitario),
           valorTotal: Number(i.valorTotal), produtoId: i.produtoId ?? null,
           produtoNovo: i.produtoNovo ?? false, produto: i.produto,
+          fatorConversao: i.fatorConversao != null ? Number(i.fatorConversao) : null,
+          operacaoConversao: (i.operacaoConversao as 'MULTIPLICAR' | 'DIVIDIR' | null) ?? null,
         })),
         duplicatas: parcelas,
       }
@@ -1214,7 +1549,8 @@ export function NfEntradaPage() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-gray-100 text-left text-xs text-gray-500 uppercase tracking-wide">
-                <th className="px-4 py-3">Data Entrada</th>
+                <th className="px-4 py-3">Emissão</th>
+                <th className="px-4 py-3">Entrada</th>
                 <th className="px-4 py-3">NF / Série</th>
                 <th className="px-4 py-3">Fornecedor</th>
                 <th className="px-4 py-3 text-center">Itens</th>
@@ -1231,6 +1567,7 @@ export function NfEntradaPage() {
                     onClick={() => abrirNf(nf)}
                     className={clsx('hover:bg-gray-50 transition', carregandoNf ? 'cursor-wait' : 'cursor-pointer')}
                   >
+                    <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{fmtDate(nf.dataEmissao)}</td>
                     <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{fmtDate(nf.dataEntrada)}</td>
                     <td className="px-4 py-3 font-mono text-xs text-gray-700 whitespace-nowrap">
                       {nf.numero || '—'}/{nf.serie || '—'}

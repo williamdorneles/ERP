@@ -74,6 +74,24 @@ enum TipoProduto {
   INSUMO_PRODUTO   // serve como ingrediente e também é vendido
 }
 
+enum MotivoCusto {
+  MANUAL         // Alterado manualmente no cadastro
+  NF_ENTRADA     // Lançamento de estoque via NF de entrada
+  FORMACAO_CUSTO // Formação de custo (rateio de frete/despesas)
+  ESTORNO_NF     // Estorno de lançamento de NF
+  BOM            // Recálculo automático por composição (BOM)
+}
+
+enum Aprovisionamento {
+  COMPRADO   // custo vem da NF de entrada
+  FABRICADO  // custo calculado pela BOM
+}
+
+enum ConversaoUnidade {
+  MULTIPLICAR
+  DIVIDIR
+}
+
 enum Categoria {
   // Insumos / matéria-prima
   FARINHA
@@ -132,21 +150,46 @@ model Produto {
   pCOFINS          Decimal?    @db.Decimal(7, 4)
   unidadeComercial String?     @db.VarChar(6)
   gtin             String?     @db.VarChar(14)
+  cest             String?     @db.VarChar(7)
+  // Aprovisionamento: COMPRADO (custo pela NF) ou FABRICADO (custo pela BOM)
+  aprovisionamento Aprovisionamento @default(COMPRADO)
   // Vínculo com fornecedor principal (salvo na primeira NF confirmada)
-  codigoFornecedor String?
-  fornecedorId     String?
+  codigoFornecedor  String?
+  fornecedorId      String?
+  // Conversão de unidade de compra para unidade de estoque
+  fatorConversao    Decimal?          @db.Decimal(10, 4)
+  operacaoConversao ConversaoUnidade?
   criadoEm        DateTime    @default(now())
   atualizadoEm    DateTime    @updatedAt
 
   fichaTecnica      FichaTecnica?
+  bom               ProdutoBom?
+  bomComponente     ProdutoBomItem[] @relation("BomComponente")
   movimentacoes     MovimentacaoEstoque[]
   ingredientesFicha IngredienteFicha[]
   itensPedidoCompra ItemPedidoCompra[]
   itensPedidoVenda  ItemPedidoVenda[]
   itensNfEntrada    ItemNfEntrada[]
+  historicoCustos   ProdutoCusto[]
   fornecedor        Pessoa?  @relation("FornecedorProdutos", fields: [fornecedorId], references: [id])
 
   @@map("produtos")
+}
+
+model ProdutoCusto {
+  id          String      @id @default(uuid())
+  produtoId   String
+  custo       Decimal     @db.Decimal(12, 4)
+  motivo      MotivoCusto
+  nfEntradaId String?
+  observacao  String?
+  criadoEm   DateTime    @default(now())
+
+  produto   Produto    @relation(fields: [produtoId], references: [id])
+  nfEntrada NfEntrada? @relation(fields: [nfEntradaId], references: [id])
+
+  @@index([produtoId, criadoEm])
+  @@map("produto_custos")
 }
 
 enum TipoMovimentacao {
@@ -217,6 +260,40 @@ model IngredienteFicha {
 
   @@unique([fichaTecnicaId, produtoId])
   @@map("ingredientes_ficha")
+}
+
+// BOM — Bill of Materials (Composição do Produto)
+
+model ProdutoBom {
+  id               String        @id @default(uuid())
+  produtoId        String        @unique
+  qtdeProduzida    Decimal       @db.Decimal(12, 3)    // tamanho do lote base
+  unidadeProduzida UnidadeMedida                       // unidade do lote (ex: UN, KG)
+  tempoPreparo     Int?                                 // minutos (opcional)
+  instrucoes       String?       @db.Text
+  criadoEm        DateTime      @default(now())
+  atualizadoEm    DateTime      @updatedAt
+
+  produto Produto          @relation(fields: [produtoId], references: [id])
+  itens   ProdutoBomItem[]
+
+  @@map("produto_bom")
+}
+
+model ProdutoBomItem {
+  id           String        @id @default(uuid())
+  bomId        String
+  componenteId String
+  quantidade   Decimal       @db.Decimal(12, 4)  // quantidade para o lote base
+  unidade      UnidadeMedida
+  percPerda    Decimal       @default(0) @db.Decimal(5, 2)  // % de perda no processo
+  ordem        Int           @default(0)
+
+  bom        ProdutoBom @relation(fields: [bomId], references: [id], onDelete: Cascade)
+  componente Produto    @relation("BomComponente", fields: [componenteId], references: [id])
+
+  @@index([bomId])
+  @@map("produto_bom_itens")
 }
 
 enum StatusOrdem {
@@ -860,6 +937,7 @@ model NfEntrada {
   itens           ItemNfEntrada[]
   movimentacoes   MovimentacaoEstoque[]
   titulos         TituloFinanceiro[]
+  custosProdutos  ProdutoCusto[]
 
   @@index([dataEntrada])
   @@index([fornecedorId])
@@ -878,8 +956,10 @@ model ItemNfEntrada {
   quantidade    Decimal  @db.Decimal(12, 3)
   valorUnitario Decimal  @db.Decimal(15, 4)
   valorTotal    Decimal  @db.Decimal(15, 2)
-  produtoId     String?
-  produtoNovo   Boolean  @default(false)
+  produtoId         String?
+  produtoNovo       Boolean           @default(false)
+  fatorConversao    Decimal?          @db.Decimal(10, 4)
+  operacaoConversao ConversaoUnidade?
 
   nfEntrada NfEntrada @relation(fields: [nfEntradaId], references: [id], onDelete: Cascade)
   produto   Produto?  @relation(fields: [produtoId], references: [id])

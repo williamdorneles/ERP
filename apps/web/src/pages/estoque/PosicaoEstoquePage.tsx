@@ -8,6 +8,7 @@ import { AlertTriangle, TrendingDown, TrendingUp, Minus, Plus, ArrowLeft } from 
 import clsx from 'clsx'
 import { FormField, Input, Select, Textarea } from '../../components/ui/FormField'
 import { Button } from '../../components/ui/Button'
+import { Form } from '../../components/ui/Form'
 
 interface Produto {
   id: string; codigo: string; nome: string
@@ -95,7 +96,7 @@ function MovimentacaoForm({
   const produtosOrdenados = [...produtos].sort((a, b) => a.nome.localeCompare(b.nome))
 
   return (
-    <form onSubmit={handleSubmit(d => mutation.mutate(d))} className="space-y-5">
+    <Form onSubmit={handleSubmit(d => mutation.mutate(d))} className="space-y-5">
       <div className="grid grid-cols-2 gap-4">
         <FormField label="Produto / Insumo" error={errors.produtoId?.message} required>
           {defaultProdutoId ? (
@@ -170,7 +171,7 @@ function MovimentacaoForm({
         <Button type="button" variant="secondary" onClick={onCancel}>Cancelar</Button>
         <Button type="submit" loading={mutation.isPending}>Registrar</Button>
       </div>
-    </form>
+    </Form>
   )
 }
 

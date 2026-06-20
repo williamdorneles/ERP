@@ -5,6 +5,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { LoginSchema, type LoginInput } from '@erp/shared'
 import { api } from '../lib/api'
 import { useAuthStore } from '../store/auth'
+import { Form } from '../components/ui/Form'
 
 export function LoginPage() {
   const navigate = useNavigate()
@@ -43,7 +44,7 @@ export function LoginPage() {
         <div className="bg-white rounded-2xl shadow-xl p-8">
           <h2 className="text-xl font-semibold text-gray-800 mb-6">Entrar no sistema</h2>
 
-          <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+          <Form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">E-mail</label>
               <input
@@ -79,7 +80,7 @@ export function LoginPage() {
             >
               {isSubmitting ? 'Entrando...' : 'Entrar'}
             </button>
-          </form>
+          </Form>
 
           <p className="text-center text-xs text-gray-400 mt-6">
             Usuário padrão: <span className="font-mono">admin@erp.com</span> / <span className="font-mono">admin123</span>

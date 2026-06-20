@@ -10,7 +10,6 @@ import jwt from '@fastify/jwt'
 import rateLimit from '@fastify/rate-limit'
 import swagger from '@fastify/swagger'
 import swaggerUi from '@fastify/swagger-ui'
-import { Prisma } from '@prisma/client'
 
 import { authRoutes } from './modules/auth/auth.routes.js'
 import { produtosRoutes } from './modules/produtos/produtos.routes.js'
@@ -98,18 +97,27 @@ app.setErrorHandler((error, _request, reply) => {
       issues: error.issues.map(i => ({ campo: i.path.join('.'), mensagem: i.message })),
     })
   }
-  if (error instanceof Prisma.PrismaClientKnownRequestError) {
-    if (error.code === 'P2002') {
+  // instanceof pode falhar por diferença de contexto ESM/CJS — usar o nome do construtor
+  const errName = (error as { constructor?: { name?: string } })?.constructor?.name
+  const errCode = (error as { code?: string })?.code
+  if (errName === 'PrismaClientKnownRequestError') {
+    if (errCode === 'P2002') {
       return reply.code(409).send({ error: 'Registro duplicado: valor já existe.' })
     }
-    if (error.code === 'P2025') {
+    if (errCode === 'P2025') {
       return reply.code(404).send({ error: 'Registro não encontrado.' })
     }
-    app.log.warn({ prismaCode: error.code }, 'Prisma known error')
+    app.log.warn({ prismaCode: errCode }, 'Prisma known error')
     return reply.code(400).send({ error: 'Erro de banco de dados.' })
   }
+  if (errName === 'PrismaClientValidationError') {
+    const msg = (error as { message?: string }).message ?? ''
+    app.log.warn({ msg }, 'Prisma validation error')
+    return reply.code(400).send({ error: `Dados inválidos para o banco: ${msg.split('\n').pop()?.trim()}` })
+  }
   app.log.error(error)
-  return reply.code(500).send({ error: 'Erro interno do servidor.' })
+  const msg = (error as { message?: string }).message
+  return reply.code(500).send({ error: msg || 'Erro interno do servidor.' })
 })
 
 const port = env.PORT

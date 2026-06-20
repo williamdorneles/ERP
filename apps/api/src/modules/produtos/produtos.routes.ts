@@ -4,6 +4,34 @@ import { z } from 'zod'
 import { CriarProdutoSchema, AtualizarProdutoSchema } from '@erp/shared'
 import { requirePerfil } from '../../plugins/auth.plugin.js'
 
+const UNIDADES = ['KG', 'G', 'L', 'ML', 'UN', 'CX', 'PCT'] as const
+
+const BomSchema = z.object({
+  qtdeProduzida:    z.number().positive(),
+  unidadeProduzida: z.enum(UNIDADES),
+  tempoPreparo:     z.number().int().positive().optional().nullable(),
+  instrucoes:       z.string().optional().nullable(),
+  itens: z.array(z.object({
+    componenteId: z.string().uuid(),
+    quantidade:   z.number().positive(),
+    unidade:      z.enum(UNIDADES),
+    percPerda:    z.number().min(0).max(100).default(0),
+    ordem:        z.number().int().default(0),
+  })).min(1),
+})
+
+function calcularCustoBom(
+  itens: { quantidade: number; percPerda: number; componente: { custoUnitario: unknown } }[],
+  qtdeProduzida: number,
+): number {
+  const total = itens.reduce((acc, item) => {
+    const custo = Number(item.componente.custoUnitario)
+    const fator = 1 + item.percPerda / 100
+    return acc + custo * Number(item.quantidade) * fator
+  }, 0)
+  return +(total / qtdeProduzida).toFixed(4)
+}
+
 const QueryProdutosSchema = z.object({
   busca: z.string().max(100).optional(),
   tipo: z.enum(['INSUMO', 'PRODUTO_ACABADO', 'INSUMO_PRODUTO']).optional(),
@@ -44,10 +72,123 @@ export async function produtosRoutes(app: FastifyInstance) {
     const { id } = request.params as { id: string }
     const produto = await prisma.produto.findUnique({
       where: { id },
-      include: { fichaTecnica: { select: { nome: true } } },
+      include: {
+        fichaTecnica: { select: { id: true } },
+        bom: {
+          include: {
+            itens: {
+              include: { componente: { select: { id: true, codigo: true, nome: true, unidadeMedida: true, custoUnitario: true } } },
+              orderBy: { ordem: 'asc' },
+            },
+          },
+        },
+      },
     })
     if (!produto) return reply.code(404).send({ error: 'Produto não encontrado' })
     return produto
+  })
+
+  // ── BOM ──────────────────────────────────────────────────────────────────────
+
+  app.put('/:id/bom', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const data = BomSchema.parse(request.body)
+
+    const produto = await prisma.produto.findUnique({ where: { id } })
+    if (!produto) return reply.code(404).send({ error: 'Produto não encontrado' })
+
+    const bom = await prisma.$transaction(async tx => {
+      // Apaga BOM existente e recria (mais simples que diff)
+      await tx.produtoBom.deleteMany({ where: { produtoId: id } })
+
+      const nova = await tx.produtoBom.create({
+        data: {
+          produtoId:        id,
+          qtdeProduzida:    data.qtdeProduzida,
+          unidadeProduzida: data.unidadeProduzida,
+          tempoPreparo:     data.tempoPreparo ?? null,
+          instrucoes:       data.instrucoes ?? null,
+          itens: {
+            create: data.itens.map(i => ({
+              componenteId: i.componenteId,
+              quantidade:   i.quantidade,
+              unidade:      i.unidade,
+              percPerda:    i.percPerda,
+              ordem:        i.ordem,
+            })),
+          },
+        },
+        include: {
+          itens: { include: { componente: { select: { custoUnitario: true } } } },
+        },
+      })
+
+      // Recalcula e atualiza custoUnitario do produto
+      const custoUnitario = calcularCustoBom(
+        nova.itens.map(i => ({ quantidade: Number(i.quantidade), percPerda: Number(i.percPerda), componente: i.componente })),
+        data.qtdeProduzida,
+      )
+      await tx.produto.update({ where: { id }, data: { aprovisionamento: 'FABRICADO', custoUnitario } })
+
+      await tx.produtoCusto.create({
+        data: { produtoId: id, custo: custoUnitario, motivo: 'BOM', observacao: 'Recálculo por BOM' },
+      })
+
+      return nova
+    })
+
+    return bom
+  })
+
+  app.delete('/:id/bom', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const existe = await prisma.produtoBom.findUnique({ where: { produtoId: id } })
+    if (!existe) return reply.code(404).send({ error: 'BOM não encontrada' })
+    await prisma.$transaction([
+      prisma.produtoBom.delete({ where: { produtoId: id } }),
+      prisma.produto.update({ where: { id }, data: { aprovisionamento: 'COMPRADO' } }),
+    ])
+    return { ok: true }
+  })
+
+  app.get('/:id/bom/preview-custo', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const bom = await prisma.produtoBom.findUnique({
+      where: { produtoId: id },
+      include: {
+        itens: {
+          include: { componente: { select: { id: true, codigo: true, nome: true, custoUnitario: true } } },
+          orderBy: { ordem: 'asc' },
+        },
+      },
+    })
+    if (!bom) return reply.code(404).send({ error: 'BOM não encontrada' })
+
+    const qtd = Number(bom.qtdeProduzida)
+    const itens = bom.itens.map(i => {
+      const custo = Number(i.componente.custoUnitario)
+      const qtdeItem = Number(i.quantidade)
+      const fator = 1 + Number(i.percPerda) / 100
+      const custoTotal = custo * qtdeItem * fator
+      return {
+        componenteId:   i.componenteId,
+        codigo:         i.componente.codigo,
+        nome:           i.componente.nome,
+        quantidade:     qtdeItem,
+        unidade:        i.unidade,
+        percPerda:      Number(i.percPerda),
+        custoUnitario:  custo,
+        custoTotal:     +custoTotal.toFixed(4),
+      }
+    })
+
+    const totalLote = itens.reduce((s, i) => s + i.custoTotal, 0)
+    return {
+      qtdeProduzida:  qtd,
+      totalLote:      +totalLote.toFixed(4),
+      custoUnitario:  +(totalLote / qtd).toFixed(4),
+      itens,
+    }
   })
 
   app.post('/', async (request, reply) => {
@@ -63,7 +204,25 @@ export async function produtosRoutes(app: FastifyInstance) {
   app.put('/:id', async (request) => {
     const { id } = request.params as { id: string }
     const data = AtualizarProdutoSchema.parse(request.body)
-    return prisma.produto.update({ where: { id }, data: data as never })
+    const produto = await prisma.produto.update({ where: { id }, data: data as never })
+    if (data.custoUnitario !== undefined) {
+      await prisma.produtoCusto.create({
+        data: { produtoId: id, custo: Number(data.custoUnitario), motivo: 'MANUAL', observacao: 'Edição manual no cadastro' },
+      })
+    }
+    return produto
+  })
+
+  app.get('/:id/custos', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const existe = await prisma.produto.findUnique({ where: { id }, select: { id: true } })
+    if (!existe) return reply.code(404).send({ error: 'Produto não encontrado' })
+    return prisma.produtoCusto.findMany({
+      where: { produtoId: id },
+      orderBy: { criadoEm: 'desc' },
+      take: 100,
+      include: { nfEntrada: { select: { numero: true, dataEntrada: true } } },
+    })
   })
 
   app.patch('/:id/toggle-ativo', async (request, reply) => {

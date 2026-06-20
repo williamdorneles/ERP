@@ -11,6 +11,7 @@ import { Modal } from '../../components/ui/Modal'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { FormField, Input, Select } from '../../components/ui/FormField'
 import { Button } from '../../components/ui/Button'
+import { Form } from '../../components/ui/Form'
 
 interface NotaFiscal {
   id: string; numero: number; serie: number; modelo: string
@@ -332,7 +333,7 @@ function EmitirNFeModal({ onSuccess, onCancel }: { onSuccess: () => void; onCanc
       </div>
 
       {modo === 'pedido' && (
-        <form onSubmit={handleSubmit(d => mutation.mutate(d as never))} className="space-y-4">
+        <Form onSubmit={handleSubmit(d => mutation.mutate(d as never))} className="space-y-4">
           <FormField label="Pedido de Venda" required hint="Somente pedidos Confirmados são listados">
             <Select {...register('pedidoId', { required: true })}>
               <option value="">Selecione o pedido...</option>
@@ -367,7 +368,7 @@ function EmitirNFeModal({ onSuccess, onCancel }: { onSuccess: () => void; onCanc
             <Button type="button" variant="secondary" onClick={onCancel}>Cancelar</Button>
             <Button type="submit" loading={mutation.isPending}>Emitir NF-e</Button>
           </div>
-        </form>
+        </Form>
       )}
 
       {modo === 'avulsa' && (

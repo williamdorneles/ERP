@@ -9,6 +9,7 @@ import { Plus, ArrowLeft } from 'lucide-react'
 import clsx from 'clsx'
 import { FormField, Input, Select, Textarea } from '../../components/ui/FormField'
 import { Button } from '../../components/ui/Button'
+import { Form } from '../../components/ui/Form'
 
 interface Movimentacao {
   id: string; produtoId: string; tipo: string; quantidade: number; lote?: string
@@ -81,7 +82,7 @@ function MovimentacaoForm({ onSuccess, onCancel }: { onSuccess: () => void; onCa
   })
 
   return (
-    <form onSubmit={handleSubmit(d => mutation.mutate(d))} className="space-y-5">
+    <Form onSubmit={handleSubmit(d => mutation.mutate(d))} className="space-y-5">
       <div className="grid grid-cols-2 gap-4">
         <FormField label="Produto / Insumo" error={errors.produtoId?.message} required>
           <Select {...register('produtoId')} error={!!errors.produtoId}>
@@ -147,7 +148,7 @@ function MovimentacaoForm({ onSuccess, onCancel }: { onSuccess: () => void; onCa
         <Button type="button" variant="secondary" onClick={onCancel}>Cancelar</Button>
         <Button type="submit" loading={mutation.isPending}>Registrar</Button>
       </div>
-    </form>
+    </Form>
   )
 }
 

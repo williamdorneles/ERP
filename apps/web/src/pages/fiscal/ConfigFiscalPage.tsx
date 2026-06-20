@@ -4,6 +4,7 @@ import { useForm } from 'react-hook-form'
 import { api } from '../../lib/api'
 import { FormField, Input, Select } from '../../components/ui/FormField'
 import { Button } from '../../components/ui/Button'
+import { Form } from '../../components/ui/Form'
 import {
   Building2, Shield, Receipt, CheckCircle2, AlertTriangle, Upload,
 } from 'lucide-react'
@@ -91,7 +92,7 @@ function TabEmpresa({ empresa, onSave }: { empresa: Record<string, unknown> | nu
   })
 
   return (
-    <form onSubmit={handleSubmit(d => mutation.mutate(d as never))} className="space-y-4">
+    <Form onSubmit={handleSubmit(d => mutation.mutate(d as never))} className="space-y-4">
       <div className="grid grid-cols-2 gap-4">
         <FormField label="Razão Social" required>
           <Input {...register('razaoSocial', { required: true })} placeholder="Padaria Brasil Ltda" />
@@ -136,7 +137,7 @@ function TabEmpresa({ empresa, onSave }: { empresa: Record<string, unknown> | nu
       </div>
 
       <SaveBar loading={mutation.isPending} dirty={isDirty} error={mutation.isError} />
-    </form>
+    </Form>
   )
 }
 
@@ -158,7 +159,7 @@ function TabEndereco({ empresa, onSave }: { empresa: Record<string, unknown> | n
   })
 
   return (
-    <form onSubmit={handleSubmit(d => mutation.mutate(d as never))} className="space-y-4">
+    <Form onSubmit={handleSubmit(d => mutation.mutate(d as never))} className="space-y-4">
       <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 text-sm text-blue-700">
         Endereço obrigatório para emissão de NF-e conforme layouts SEFAZ NT 2024.
       </div>
@@ -209,7 +210,7 @@ function TabEndereco({ empresa, onSave }: { empresa: Record<string, unknown> | n
       </div>
 
       <SaveBar loading={mutation.isPending} dirty={isDirty} />
-    </form>
+    </Form>
   )
 }
 
@@ -237,7 +238,7 @@ function TabNFe({ empresa, onSave }: { empresa: Record<string, unknown> | null; 
   })
 
   return (
-    <form onSubmit={handleSubmit(d => mutation.mutate(d as never))} className="space-y-4">
+    <Form onSubmit={handleSubmit(d => mutation.mutate(d as never))} className="space-y-4">
       <div className="grid grid-cols-2 gap-4">
         <FormField label="Ambiente SEFAZ" required>
           <Select {...register('ambiente')}>
@@ -283,7 +284,7 @@ function TabNFe({ empresa, onSave }: { empresa: Record<string, unknown> | null; 
       </div>
 
       <SaveBar loading={mutation.isPending} dirty={isDirty} />
-    </form>
+    </Form>
   )
 }
 

@@ -6,6 +6,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../lib/api'
 import { FormField, Input, Select, Textarea } from '../ui/FormField'
 import { Button } from '../ui/Button'
+import { Form } from '../ui/Form'
 import { useState } from 'react'
 import { AlertTriangle, CheckCircle } from 'lucide-react'
 
@@ -114,7 +115,7 @@ export function OrdemProducaoForm({ initialData, onSuccess, onCancel }: OrdemPro
   const temEstoqueInsuficiente = explosao?.some(e => !e.suficiente)
 
   return (
-    <form onSubmit={handleSubmit(d => mutation.mutate(d))} className="space-y-4">
+    <Form onSubmit={handleSubmit(d => mutation.mutate(d))} className="space-y-4">
       <FormField label="Nº Ordem">
         <input
           readOnly
@@ -224,6 +225,6 @@ export function OrdemProducaoForm({ initialData, onSuccess, onCancel }: OrdemPro
           {isEditing ? 'Salvar Alterações' : 'Criar Ordem'}
         </Button>
       </div>
-    </form>
+    </Form>
   )
 }

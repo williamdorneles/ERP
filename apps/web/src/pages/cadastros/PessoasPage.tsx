@@ -9,6 +9,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { FormField, Input, Select, CurrencyInput } from '../../components/ui/FormField'
 import { Button } from '../../components/ui/Button'
+import { Form } from '../../components/ui/Form'
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
@@ -127,7 +128,7 @@ function PessoaForm({
   })
 
   return (
-    <form onSubmit={handleSubmit(d => mutation.mutate(d))} className="space-y-4">
+    <Form onSubmit={handleSubmit(d => mutation.mutate(d))} className="space-y-4">
       {/* Tabs */}
       <div className="flex gap-1 border-b border-gray-200 pb-0 -mt-1">
         {(['geral', 'fiscal'] as const).map(t => (
@@ -297,7 +298,7 @@ function PessoaForm({
           {isEditing ? 'Salvar Alterações' : 'Salvar'}
         </Button>
       </div>
-    </form>
+    </Form>
   )
 }
 
@@ -470,7 +471,7 @@ export function PessoasPage() {
                         <Pencil size={14} />
                       </button>
                       <button
-                        onClick={() => setConfirmToggle(p)}
+                        onClick={e => { e.stopPropagation(); setConfirmToggle(p) }}
                         title={p.ativo ? 'Desativar' : 'Reativar'}
                         className={clsx(
                           'p-1.5 rounded-lg transition',

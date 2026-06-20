@@ -42,7 +42,18 @@ export interface NFeParseResult {
   dataEmissao: string   // YYYY-MM-DD
   dataEntrada: string   // YYYY-MM-DD
   emitenteCnpj: string
-  emitenteNome: string
+  emitenteNome: string        // xFant || xNome  (display)
+  emitenteRazaoSocial: string // xNome
+  emitenteNomeFant: string    // xFant
+  emitenteIE: string
+  emitenteCRT: string
+  emitenteEnderLgr: string
+  emitenteEnderNro: string
+  emitenteEnderBairro: string
+  emitenteEnderMun: string
+  emitenteEnderUF: string
+  emitenteEnderCEP: string
+  emitenteFone: string
   destinatarioCnpj: string
   totalProdutos: number
   // Frete, seguro e despesas (ICMSTot)
@@ -90,9 +101,21 @@ export function parseNFe(xmlRaw: string): NFeParseResult {
   const toDate = (d: string) => d ? d.slice(0, 10) : new Date().toISOString().slice(0, 10)
 
   const destXml = tag(xml, 'dest')
-  const emitenteCnpj = tag(emitXml, 'CNPJ') || tag(emitXml, 'CPF')
-  const emitenteNome = tag(emitXml, 'xFant') || tag(emitXml, 'xNome')
-  const destinatarioCnpj = tag(destXml, 'CNPJ') || tag(destXml, 'CPF')
+  const enderEmitXml      = tag(emitXml, 'enderEmit')
+  const emitenteCnpj      = tag(emitXml, 'CNPJ') || tag(emitXml, 'CPF')
+  const emitenteRazaoSocial = tag(emitXml, 'xNome')
+  const emitenteNomeFant    = tag(emitXml, 'xFant')
+  const emitenteNome        = emitenteNomeFant || emitenteRazaoSocial
+  const emitenteIE          = tag(emitXml, 'IE')
+  const emitenteCRT         = tag(emitXml, 'CRT')
+  const emitenteEnderLgr    = tag(enderEmitXml, 'xLgr')
+  const emitenteEnderNro    = tag(enderEmitXml, 'nro')
+  const emitenteEnderBairro = tag(enderEmitXml, 'xBairro')
+  const emitenteEnderMun    = tag(enderEmitXml, 'xMun')
+  const emitenteEnderUF     = tag(enderEmitXml, 'UF')
+  const emitenteEnderCEP    = tag(enderEmitXml, 'CEP')
+  const emitenteFone        = tag(enderEmitXml, 'fone') || tag(emitXml, 'fone')
+  const destinatarioCnpj    = tag(destXml, 'CNPJ') || tag(destXml, 'CPF')
 
   const totalProdutos = num(tag(totalXml, 'vProd'))
   const totalNf       = num(tag(totalXml, 'vNF'))
@@ -163,6 +186,17 @@ export function parseNFe(xmlRaw: string): NFeParseResult {
     dataEntrada: toDate(dhEnt || dhEmi),
     emitenteCnpj,
     emitenteNome,
+    emitenteRazaoSocial,
+    emitenteNomeFant,
+    emitenteIE,
+    emitenteCRT,
+    emitenteEnderLgr,
+    emitenteEnderNro,
+    emitenteEnderBairro,
+    emitenteEnderMun,
+    emitenteEnderUF,
+    emitenteEnderCEP,
+    emitenteFone,
     destinatarioCnpj,
     totalProdutos,
     vFrete, vSeg, vDesc, vOutro,

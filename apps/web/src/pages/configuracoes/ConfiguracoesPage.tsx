@@ -5,6 +5,7 @@ import { api } from '../../lib/api'
 import { useAuthStore } from '../../store/auth'
 import { FormField, Input, Select } from '../../components/ui/FormField'
 import { Button } from '../../components/ui/Button'
+import { Form } from '../../components/ui/Form'
 import { Settings, Receipt, Building2, Shield, CheckCircle2, AlertTriangle, Upload } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -213,7 +214,7 @@ function TabEmpresa({ empresa, onSave }: { empresa: Record<string, unknown> | nu
   const mutation = useMutation({ mutationFn: (data: Record<string, unknown>) => api.put('/fiscal/empresa', data), onSuccess: onSave })
 
   return (
-    <form onSubmit={handleSubmit(d => mutation.mutate(d as never))} className="space-y-4">
+    <Form onSubmit={handleSubmit(d => mutation.mutate(d as never))} className="space-y-4">
       <div className="grid grid-cols-2 gap-4">
         <FormField label="Razão Social" required><Input {...register('razaoSocial', { required: true })} placeholder="Padaria Brasil Ltda" /></FormField>
         <FormField label="Nome Fantasia"><Input {...register('nomeFantasia')} placeholder="Padaria Brasil" /></FormField>
@@ -238,7 +239,7 @@ function TabEmpresa({ empresa, onSave }: { empresa: Record<string, unknown> | nu
         <FormField label="E-mail"><Input {...register('email')} type="email" placeholder="fiscal@empresa.com.br" /></FormField>
       </div>
       <SaveBar loading={mutation.isPending} dirty={isDirty} error={mutation.isError} />
-    </form>
+    </Form>
   )
 }
 
@@ -252,7 +253,7 @@ function TabEndereco({ empresa, onSave }: { empresa: Record<string, unknown> | n
   const mutation = useMutation({ mutationFn: (data: Record<string, unknown>) => api.put('/fiscal/empresa', data), onSuccess: onSave })
 
   return (
-    <form onSubmit={handleSubmit(d => mutation.mutate(d as never))} className="space-y-4">
+    <Form onSubmit={handleSubmit(d => mutation.mutate(d as never))} className="space-y-4">
       <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 text-sm text-blue-700">
         Endereço obrigatório para emissão de NF-e conforme layouts SEFAZ NT 2024.
       </div>
@@ -280,7 +281,7 @@ function TabEndereco({ empresa, onSave }: { empresa: Record<string, unknown> | n
         <FormField label="Código IBGE" hint="7 dígitos"><Input {...register('codigoIBGE')} placeholder="3550308" maxLength={7} /></FormField>
       </div>
       <SaveBar loading={mutation.isPending} dirty={isDirty} />
-    </form>
+    </Form>
   )
 }
 
@@ -294,7 +295,7 @@ function TabNFe({ empresa, onSave }: { empresa: Record<string, unknown> | null; 
   const mutation = useMutation({ mutationFn: (data: Record<string, unknown>) => api.put('/fiscal/empresa', data), onSuccess: onSave })
 
   return (
-    <form onSubmit={handleSubmit(d => mutation.mutate(d as never))} className="space-y-4">
+    <Form onSubmit={handleSubmit(d => mutation.mutate(d as never))} className="space-y-4">
       <div className="grid grid-cols-2 gap-4">
         <FormField label="Ambiente SEFAZ" required>
           <Select {...register('ambiente')}>
@@ -326,7 +327,7 @@ function TabNFe({ empresa, onSave }: { empresa: Record<string, unknown> | null; 
         <strong>Ambiente Homologação:</strong> NF-e emitidas não têm validade fiscal. Mude para <strong>Produção</strong> somente após validar com a contabilidade.
       </div>
       <SaveBar loading={mutation.isPending} dirty={isDirty} />
-    </form>
+    </Form>
   )
 }
 
