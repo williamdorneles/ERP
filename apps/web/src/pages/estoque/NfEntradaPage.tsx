@@ -195,10 +195,11 @@ function FornecedorInput({ pessoasList, fornecedorId, fornecedorNome, fornecedor
   const [busca, setBusca] = useState('')
 
   const vinculado = pessoasList.find(p => p.id === fornecedorId)
+  const buscaDigitos = busca.replace(/\D/g, '')
   const filtrados = busca.trim()
     ? pessoasList.filter(p =>
         p.nome.toLowerCase().includes(busca.toLowerCase()) ||
-        (p.documento ?? '').includes(busca.replace(/\D/g, '')))
+        (buscaDigitos !== '' && (p.documento ?? '').includes(buscaDigitos)))
     : pessoasList
   const displayValue = aberto ? busca : fornecedorNome
 

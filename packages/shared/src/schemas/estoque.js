@@ -30,4 +30,12 @@ export const MovimentacaoEstoqueSchema = z.object({
     observacao: z.string().optional(),
     criadoEm: z.coerce.date(),
 });
+export const CriarMovimentacaoSchema = z.object({
+    produtoId: z.string().uuid('produtoId deve ser um UUID válido'),
+    tipo: z.enum(['ENTRADA', 'SAIDA', 'AJUSTE', 'PERDA']),
+    quantidade: z.number().positive('Quantidade deve ser maior que zero'),
+    lote: z.string().max(50).optional(),
+    dataVencimento: z.coerce.date().optional(),
+    observacao: z.string().max(500).optional(),
+});
 //# sourceMappingURL=estoque.js.map

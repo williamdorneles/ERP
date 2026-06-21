@@ -5,14 +5,14 @@ export declare const IngredienteFichaSchema: z.ZodObject<{
     unidadeMedida: z.ZodEnum<["KG", "G", "L", "ML", "UN"]>;
     observacao: z.ZodOptional<z.ZodString>;
 }, "strip", z.ZodTypeAny, {
-    quantidade: number;
     unidadeMedida: "KG" | "G" | "L" | "ML" | "UN";
     insumoId: string;
+    quantidade: number;
     observacao?: string | undefined;
 }, {
-    quantidade: number;
     unidadeMedida: "KG" | "G" | "L" | "ML" | "UN";
     insumoId: string;
+    quantidade: number;
     observacao?: string | undefined;
 }>;
 export declare const FichaTecnicaSchema: z.ZodObject<{
@@ -31,30 +31,30 @@ export declare const FichaTecnicaSchema: z.ZodObject<{
         unidadeMedida: z.ZodEnum<["KG", "G", "L", "ML", "UN"]>;
         observacao: z.ZodOptional<z.ZodString>;
     }, "strip", z.ZodTypeAny, {
-        quantidade: number;
         unidadeMedida: "KG" | "G" | "L" | "ML" | "UN";
         insumoId: string;
+        quantidade: number;
         observacao?: string | undefined;
     }, {
-        quantidade: number;
         unidadeMedida: "KG" | "G" | "L" | "ML" | "UN";
         insumoId: string;
+        quantidade: number;
         observacao?: string | undefined;
     }>, "many">;
     instrucoes: z.ZodOptional<z.ZodString>;
     ativo: z.ZodDefault<z.ZodBoolean>;
 }, "strip", z.ZodTypeAny, {
+    categoria: "OUTROS" | "PAO" | "BOLO" | "DOCE" | "SALGADO" | "MASSA" | "RECHEIO";
     id: string;
     nome: string;
     ativo: boolean;
     codigo: string;
-    categoria: "OUTROS" | "PAO" | "BOLO" | "DOCE" | "SALGADO" | "MASSA" | "RECHEIO";
     rendimento: number;
     unidadeRendimento: "KG" | "G" | "UN";
     ingredientes: {
-        quantidade: number;
         unidadeMedida: "KG" | "G" | "L" | "ML" | "UN";
         insumoId: string;
+        quantidade: number;
         observacao?: string | undefined;
     }[];
     tempoPreparo?: number | undefined;
@@ -62,16 +62,16 @@ export declare const FichaTecnicaSchema: z.ZodObject<{
     temperaturaForno?: number | undefined;
     instrucoes?: string | undefined;
 }, {
+    categoria: "OUTROS" | "PAO" | "BOLO" | "DOCE" | "SALGADO" | "MASSA" | "RECHEIO";
     id: string;
     nome: string;
     codigo: string;
-    categoria: "OUTROS" | "PAO" | "BOLO" | "DOCE" | "SALGADO" | "MASSA" | "RECHEIO";
     rendimento: number;
     unidadeRendimento: "KG" | "G" | "UN";
     ingredientes: {
-        quantidade: number;
         unidadeMedida: "KG" | "G" | "L" | "ML" | "UN";
         insumoId: string;
+        quantidade: number;
         observacao?: string | undefined;
     }[];
     ativo?: boolean | undefined;
@@ -92,27 +92,27 @@ export declare const OrdemProducaoSchema: z.ZodObject<{
     observacao: z.ZodOptional<z.ZodString>;
     criadoEm: z.ZodDate;
 }, "strip", z.ZodTypeAny, {
+    status: "PLANEJADA" | "EM_PRODUCAO" | "CONCLUIDA" | "CANCELADA";
     id: string;
     criadoEm: Date;
     numero: string;
-    fichaTecnicaId: string;
     quantidade: number;
-    status: "PLANEJADA" | "EM_PRODUCAO" | "CONCLUIDA" | "CANCELADA";
+    fichaTecnicaId: string;
     turno: "MANHA" | "TARDE" | "NOITE";
     dataProducao: Date;
-    responsavelId?: string | undefined;
     observacao?: string | undefined;
+    responsavelId?: string | undefined;
 }, {
+    status: "PLANEJADA" | "EM_PRODUCAO" | "CONCLUIDA" | "CANCELADA";
     id: string;
     criadoEm: Date;
     numero: string;
-    fichaTecnicaId: string;
     quantidade: number;
-    status: "PLANEJADA" | "EM_PRODUCAO" | "CONCLUIDA" | "CANCELADA";
+    fichaTecnicaId: string;
     turno: "MANHA" | "TARDE" | "NOITE";
     dataProducao: Date;
-    responsavelId?: string | undefined;
     observacao?: string | undefined;
+    responsavelId?: string | undefined;
 }>;
 export type FichaTecnica = z.infer<typeof FichaTecnicaSchema>;
 export type OrdemProducao = z.infer<typeof OrdemProducaoSchema>;

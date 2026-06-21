@@ -19,7 +19,9 @@ interface Produto {
   id: string; codigo: string; nome: string
   tipo: 'INSUMO' | 'PRODUTO_ACABADO' | 'INSUMO_PRODUTO'
   aprovisionamento: 'COMPRADO' | 'FABRICADO'
-  categoria?: string; ativo: boolean
+  categoriaId?: string | null
+  categoria?: { id: string; nome: string } | null
+  ativo: boolean
   unidadeMedida: UnidadeMedida; estoqueAtual: number; estoqueMinimo: number; custoUnitario: number
   precoVenda?: number
   ncm?: string; cest?: string; gtin?: string; origem: number
@@ -59,7 +61,7 @@ interface ProdutoSimples {
 const schema = z.object({
   tipo: z.enum(['INSUMO', 'PRODUTO_ACABADO', 'INSUMO_PRODUTO']),
   nome: z.string().min(2, 'Mínimo 2 caracteres'),
-  categoria: z.string().optional(),
+  categoriaId: z.string().optional().nullable(),
   unidadeMedida: z.enum(['KG', 'G', 'L', 'ML', 'UN', 'CX', 'PCT']),
   estoqueMinimo: z.coerce.number().min(0),
   custoUnitario: z.coerce.number().min(0),
@@ -538,13 +540,18 @@ function ProdutoForm({
   })
   const fornecedores = todasPessoas.filter(p => p.tipo === 'FORNECEDOR' || p.tipo === 'AMBOS')
 
+  const { data: categorias = [] } = useQuery<{ id: string; nome: string; ativo: boolean }[]>({
+    queryKey: ['categorias'],
+    queryFn: () => api.get('/categorias').then(r => r.data),
+  })
+
   const { register, handleSubmit, watch, control, setValue, formState: { errors } } = useForm<FormData>({
     resolver: zodResolver(schema),
     defaultValues: initialData
       ? {
           tipo: initialData.tipo,
           nome: initialData.nome,
-          categoria: initialData.categoria ?? '',
+          categoriaId: initialData.categoriaId ?? '',
           unidadeMedida: initialData.unidadeMedida as FormData['unidadeMedida'],
           estoqueMinimo: Number(initialData.estoqueMinimo),
           custoUnitario: Number(initialData.custoUnitario),
@@ -590,7 +597,7 @@ function ProdutoForm({
     mutationFn: (data: FormData) => {
       const payload = {
         ...data,
-        categoria: data.categoria || undefined,
+        categoriaId: data.categoriaId || null,
         precoVenda: data.precoVenda || undefined,
         ncm: data.ncm || undefined,
         cest: data.cest || undefined,
@@ -671,30 +678,11 @@ function ProdutoForm({
               </Select>
             </FormField>
             <FormField label="Categoria">
-              <Select {...register('categoria')}>
+              <Select {...register('categoriaId')}>
                 <option value="">—</option>
-                {mostraEstoque && (
-                  <optgroup label="Insumos">
-                    <option value="FARINHA">Farinha</option>
-                    <option value="GORDURA">Gordura</option>
-                    <option value="ACUCAR">Açúcar</option>
-                    <option value="FERMENTO">Fermento</option>
-                    <option value="LATICINIOS">Laticínios</option>
-                    <option value="OVOS">Ovos</option>
-                    <option value="EMBALAGEM">Embalagem</option>
-                  </optgroup>
-                )}
-                {mostraVenda && (
-                  <optgroup label="Produtos">
-                    <option value="PAO">Pão</option>
-                    <option value="BOLO">Bolo</option>
-                    <option value="DOCE">Doce</option>
-                    <option value="SALGADO">Salgado</option>
-                    <option value="MASSA">Massa</option>
-                    <option value="RECHEIO">Recheio</option>
-                  </optgroup>
-                )}
-                <option value="OUTROS">Outros</option>
+                {categorias.filter(c => c.ativo).map(c => (
+                  <option key={c.id} value={c.id}>{c.nome}</option>
+                ))}
               </Select>
             </FormField>
             <FormField label="Origem">
@@ -1025,7 +1013,7 @@ export function ProdutosPage() {
                         {tipoLabel[p.tipo]}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-gray-500 text-xs">{p.categoria ?? '—'}</td>
+                    <td className="px-4 py-3 text-gray-500 text-xs">{p.categoria?.nome ?? '—'}</td>
                     <td className="px-4 py-3 text-gray-600">{p.unidadeMedida}</td>
                     <td className={clsx(
                       'px-4 py-3 text-right font-semibold',

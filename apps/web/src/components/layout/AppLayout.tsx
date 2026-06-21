@@ -23,6 +23,7 @@ const navItems: NavItem[] = [
     children: [
       { label: 'Produtos & Insumos', href: '/cadastros/produtos' },
       { label: 'Clientes & Fornecedores', href: '/cadastros/pessoas' },
+      { label: 'Categorias', href: '/cadastros/categorias' },
       { label: 'Plano de Contas', href: '/financeiro/contas' },
       { label: 'Contas Bancárias', href: '/financeiro/contas-bancarias' },
     ],
@@ -61,11 +62,9 @@ const navItems: NavItem[] = [
     label: 'Financeiro',
     icon: <DollarSign size={18} />,
     children: [
+      { label: 'Caixa', href: '/financeiro/caixa' },
       { label: 'Contas a Pagar/Receber', href: '/financeiro/titulos' },
       { label: 'Conciliação Bancária', href: '/financeiro/conciliacao' },
-      { label: 'Importar OFX', href: '/financeiro/importar' },
-      { label: 'Transações', href: '/financeiro/transacoes' },
-      { label: 'Regras', href: '/financeiro/regras' },
       { label: 'DRE', href: '/financeiro/dre' },
     ],
   },

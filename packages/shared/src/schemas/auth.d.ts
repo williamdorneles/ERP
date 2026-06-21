@@ -17,16 +17,16 @@ export declare const UsuarioSchema: z.ZodObject<{
     ativo: z.ZodDefault<z.ZodBoolean>;
     criadoEm: z.ZodDate;
 }, "strip", z.ZodTypeAny, {
+    email: string;
     id: string;
     nome: string;
-    email: string;
     perfil: "ADMIN" | "GERENTE" | "PRODUCAO" | "VENDAS" | "FINANCEIRO" | "ESTOQUE";
     ativo: boolean;
     criadoEm: Date;
 }, {
+    email: string;
     id: string;
     nome: string;
-    email: string;
     perfil: "ADMIN" | "GERENTE" | "PRODUCAO" | "VENDAS" | "FINANCEIRO" | "ESTOQUE";
     criadoEm: Date;
     ativo?: boolean | undefined;

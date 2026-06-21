@@ -35,10 +35,7 @@ function calcularCustoBom(
 const QueryProdutosSchema = z.object({
   busca: z.string().max(100).optional(),
   tipo: z.enum(['INSUMO', 'PRODUTO_ACABADO', 'INSUMO_PRODUTO']).optional(),
-  categoria: z.enum([
-    'FARINHA', 'GORDURA', 'ACUCAR', 'FERMENTO', 'LATICINIOS', 'OVOS', 'EMBALAGEM',
-    'PAO', 'BOLO', 'DOCE', 'SALGADO', 'MASSA', 'RECHEIO', 'OUTROS',
-  ]).optional(),
+  categoriaId: z.string().uuid().optional(),
   mostrarInativos: z.enum(['true', 'false']).optional(),
 })
 
@@ -46,15 +43,16 @@ export async function produtosRoutes(app: FastifyInstance) {
   app.addHook('preHandler', requirePerfil('ADMIN', 'GERENTE', 'VENDAS', 'ESTOQUE', 'PRODUCAO', 'FINANCEIRO'))
 
   app.get('/', async (request) => {
-    const { busca, tipo, categoria, mostrarInativos } = QueryProdutosSchema.parse(request.query)
+    const { busca, tipo, categoriaId, mostrarInativos } = QueryProdutosSchema.parse(request.query)
 
     return prisma.produto.findMany({
       where: {
         ...(mostrarInativos !== 'true' && { ativo: true }),
         ...(busca && { nome: { contains: busca, mode: 'insensitive' } }),
         ...(tipo && { tipo }),
-        ...(categoria && { categoria }),
+        ...(categoriaId && { categoriaId }),
       },
+      include: { categoria: { select: { id: true, nome: true } } },
       orderBy: { nome: 'asc' },
     })
   })
@@ -73,6 +71,7 @@ export async function produtosRoutes(app: FastifyInstance) {
     const produto = await prisma.produto.findUnique({
       where: { id },
       include: {
+        categoria: { select: { id: true, nome: true } },
         fichaTecnica: { select: { id: true } },
         bom: {
           include: {

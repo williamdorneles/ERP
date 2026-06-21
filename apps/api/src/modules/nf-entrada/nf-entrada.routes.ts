@@ -482,6 +482,7 @@ export async function nfEntradaRoutes(app: FastifyInstance) {
       data: {
         tipo: 'PAGAR',
         descricao: `NF ${nf.numero || id} — ${nf.fornecedorNome}`,
+        documento: nf.numero ? String(nf.numero) : null,
         total: totalParcelas,
         pessoaId: nf.fornecedorId || null,
         nfEntradaId: id,

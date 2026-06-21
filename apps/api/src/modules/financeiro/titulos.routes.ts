@@ -26,16 +26,23 @@ export async function titulosRoutes(app: FastifyInstance) {
     else where.status = { notIn: ['CANCELADO', 'QUITADO'] }
     if (pessoaId) where.pessoaId = pessoaId
 
-    // Filtra por vencimento de parcelas (via join)
-    const parcelasWhere: Record<string, unknown> = { status: 'ABERTO' }
-    if (vencimentoInicio || vencimentoFim) {
-      parcelasWhere.vencimento = {
-        ...(vencimentoInicio && { gte: new Date(vencimentoInicio) }),
-        ...(vencimentoFim && { lte: new Date(vencimentoFim) }),
+    // Filtra títulos que têm ao menos uma parcela dentro do período
+    // O status da parcela acompanha o status do título selecionado:
+    // QUITADO → filtra parcelas quitadas; demais → filtra parcelas abertas
+    if (vencimentoInicio || vencimentoFim || vencidos === 'true') {
+      const parcelaStatus = status === 'QUITADO' ? 'QUITADO'
+        : status === 'CANCELADO' ? 'CANCELADO'
+        : 'ABERTO'
+      const parcelasWhere: Record<string, unknown> = { status: parcelaStatus }
+      if (vencidos === 'true') {
+        parcelasWhere.vencimento = { lt: hoje }
+      } else {
+        parcelasWhere.vencimento = {
+          ...(vencimentoInicio && { gte: new Date(vencimentoInicio) }),
+          ...(vencimentoFim && { lte: new Date(vencimentoFim) }),
+        }
       }
-    }
-    if (vencidos === 'true') {
-      parcelasWhere.vencimento = { lt: hoje }
+      where.parcelas = { some: parcelasWhere }
     }
 
     const [dados, total] = await Promise.all([
@@ -122,6 +129,7 @@ export async function titulosRoutes(app: FastifyInstance) {
       data: {
         tipo: data.tipo,
         descricao: data.descricao,
+        documento: data.documento ?? null,
         total,
         pessoaId: data.pessoaId ?? null,
         pedidoVendaId: data.pedidoVendaId ?? null,
@@ -174,7 +182,20 @@ export async function titulosRoutes(app: FastifyInstance) {
 
     const parcela = await prisma.parcelaFinanceira.findUnique({
       where: { id: parcelaId },
-      include: { titulo: { select: { id: true, tipo: true } } },
+      include: {
+        titulo: {
+          select: {
+            id: true,
+            tipo: true,
+            descricao: true,
+            documento: true,
+            recorrenciaId: true,
+            recorrenciaOrdem: true,
+            pessoa: { select: { nome: true } },
+            _count: { select: { parcelas: true } },
+          },
+        },
+      },
     })
     if (!parcela) return reply.code(404).send({ error: 'Parcela não encontrada.' })
     if (parcela.tituloId !== id) return reply.code(400).send({ error: 'Parcela não pertence a este título.' })
@@ -183,18 +204,61 @@ export async function titulosRoutes(app: FastifyInstance) {
     const contaBancaria = await prisma.contaBancaria.findUnique({ where: { id: data.contaBancariaId } })
     if (!contaBancaria) return reply.code(404).send({ error: 'Conta bancária não encontrada.' })
 
+    let statusFinalTitulo = 'ABERTO'
+
     await prisma.$transaction(async (tx) => {
-      // Atualiza parcela
+      const encargos = (data.juros ?? 0) + (data.multa ?? 0) + (data.taxas ?? 0)
+      const principalPago = data.valorPago - encargos
+      const valorOriginal = Number(parcela.valor)
+      const restante = Number((valorOriginal - principalPago).toFixed(2))
+      const isParcial = restante > 0.005
+
+      // Quita a parcela atual (total ou parcial)
       await tx.parcelaFinanceira.update({
         where: { id: parcelaId },
         data: {
           status: 'QUITADO',
           dataBaixa: new Date(data.dataBaixa),
           valorPago: data.valorPago,
+          juros: data.juros ?? null,
+          multa: data.multa ?? null,
+          taxas: data.taxas ?? null,
           contaBancariaId: data.contaBancariaId,
           observacao: data.observacao ?? null,
         },
       })
+
+      // Se parcial: cria nova parcela com o restante
+      if (isParcial) {
+        const { _max } = await tx.parcelaFinanceira.aggregate({
+          where: { tituloId: id },
+          _max: { numero: true },
+        })
+        const vencimentoRestante = data.vencimentoRestante
+          ? new Date(data.vencimentoRestante)
+          : parcela.vencimento
+
+        await tx.parcelaFinanceira.create({
+          data: {
+            tituloId: id,
+            numero: (_max.numero ?? 0) + 1,
+            valor: restante,
+            vencimento: vencimentoRestante,
+            parcelaOrigemId: parcelaId,
+          },
+        })
+      }
+
+      // Monta descrição para o caixa/extrato
+      const acao = parcela.titulo.tipo === 'PAGAR' ? 'Baixa' : 'Recebimento'
+      const totalParcelas = parcela.titulo._count.parcelas
+      const prefixo = isParcial ? `${acao} parcial` : acao
+      const docLabel = parcela.titulo.documento ? ` (nº ${parcela.titulo.documento})` : ''
+      const tituloLabel = `${prefixo} — ${parcela.titulo.descricao}${docLabel}`
+      const parcelaLabel = `parcela ${parcela.numero}/${totalParcelas}`
+      const pessoa = parcela.titulo.pessoa?.nome ?? null
+      const partes = [tituloLabel, parcelaLabel, pessoa, data.observacao || null].filter(Boolean)
+      const descricao = partes.join(', ')
 
       // Lança na conta bancária (transação financeira)
       await tx.transacaoFinanceira.create({
@@ -204,8 +268,8 @@ export async function titulosRoutes(app: FastifyInstance) {
           data: new Date(data.dataBaixa),
           valor: data.valorPago,
           tipo: parcela.titulo.tipo === 'PAGAR' ? 'DEBITO' : 'CREDITO',
-          descricao: `Baixa parcela — título`,
-          nomeOriginal: `Baixa parcela — título`,
+          descricao,
+          nomeOriginal: descricao,
           fonteClassificacao: 'TITULO',
           confiancaClassificacao: 1,
           status: 'REVISADO',
@@ -220,6 +284,93 @@ export async function titulosRoutes(app: FastifyInstance) {
       const abertas = todasParcelas.filter(p => p.status === 'ABERTO').length
       const quitadas = todasParcelas.filter(p => p.status === 'QUITADO').length
       const novoStatus = abertas === 0 && quitadas > 0 ? 'QUITADO' : quitadas > 0 ? 'PARCIAL' : 'ABERTO'
+      statusFinalTitulo = novoStatus
+      await tx.tituloFinanceiro.update({ where: { id }, data: { status: novoStatus } })
+    })
+
+    // Auto-renovação: se o título recorrente foi quitado e é o último do lote
+    if (statusFinalTitulo === 'QUITADO' && parcela.titulo.recorrenciaId && parcela.titulo.recorrenciaOrdem) {
+      try {
+        const { _max } = await prisma.tituloFinanceiro.aggregate({
+          where: { recorrenciaId: parcela.titulo.recorrenciaId },
+          _max: { recorrenciaOrdem: true },
+        })
+        if (parcela.titulo.recorrenciaOrdem === _max.recorrenciaOrdem) {
+          const rec = await prisma.recorrenciaFinanceira.findUnique({ where: { id: parcela.titulo.recorrenciaId } })
+          if (rec?.ativa) {
+            const baseOrdem = _max.recorrenciaOrdem!
+            const ultimaVenc = parcela.vencimento
+            const datas: Date[] = []
+            for (let i = 1; i <= 12; i++) {
+              const d = new Date(ultimaVenc)
+              d.setMonth(d.getMonth() + i)
+              const dia = Math.min(rec.diaVencimento, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate())
+              datas.push(new Date(Date.UTC(d.getFullYear(), d.getMonth(), dia)))
+            }
+            await prisma.$transaction(
+              datas.map((venc, i) =>
+                prisma.tituloFinanceiro.create({
+                  data: {
+                    tipo: rec.tipo,
+                    descricao: rec.descricao,
+                    total: rec.valor,
+                    pessoaId: rec.pessoaId,
+                    contaFinanceiraId: rec.contaFinanceiraId,
+                    observacao: rec.observacao,
+                    recorrenciaId: rec.id,
+                    recorrenciaOrdem: baseOrdem + i + 1,
+                    parcelas: { create: [{ numero: 1, valor: rec.valor, vencimento: venc }] },
+                  },
+                })
+              )
+            )
+          }
+        }
+      } catch (err) {
+        // Auto-renovação não bloqueia a baixa
+        console.error('Falha na auto-renovação da recorrência:', err)
+      }
+    }
+
+    return { ok: true }
+  })
+
+  app.patch('/:id/parcelas/:parcelaId/estornar', async (request, reply) => {
+    const { id, parcelaId } = request.params as { id: string; parcelaId: string }
+
+    const parcela = await prisma.parcelaFinanceira.findUnique({ where: { id: parcelaId } })
+    if (!parcela || parcela.tituloId !== id) return reply.code(404).send({ error: 'Parcela não encontrada.' })
+    if (parcela.status !== 'QUITADO') return reply.code(409).send({ error: 'Apenas parcelas quitadas podem ser estornadas.' })
+
+    await prisma.$transaction(async (tx) => {
+      // Remove a transação financeira gerada pela baixa
+      await tx.transacaoFinanceira.deleteMany({ where: { fitid: `TITULO-${parcelaId}` } })
+
+      // Remove parcela de saldo criada em baixa parcial (se existir)
+      await tx.parcelaFinanceira.deleteMany({ where: { tituloId: id, parcelaOrigemId: parcelaId } })
+
+      // Restaura parcela para ABERTO limpando todos os campos de baixa
+      await tx.parcelaFinanceira.update({
+        where: { id: parcelaId },
+        data: {
+          status: 'ABERTO',
+          dataBaixa: null,
+          valorPago: null,
+          juros: null,
+          multa: null,
+          taxas: null,
+          contaBancariaId: null,
+          observacao: null,
+        },
+      })
+
+      // Recalcula status do título
+      const todasParcelas = await tx.parcelaFinanceira.findMany({
+        where: { tituloId: id }, select: { status: true },
+      })
+      const abertas = todasParcelas.filter(p => p.status === 'ABERTO').length
+      const quitadas = todasParcelas.filter(p => p.status === 'QUITADO').length
+      const novoStatus = abertas === 0 && quitadas === 0 ? 'CANCELADO' : abertas === 0 ? 'QUITADO' : quitadas > 0 ? 'PARCIAL' : 'ABERTO'
       await tx.tituloFinanceiro.update({ where: { id }, data: { status: novoStatus } })
     })
 

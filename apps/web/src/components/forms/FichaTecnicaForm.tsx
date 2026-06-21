@@ -18,7 +18,7 @@ const ingredienteSchema = z.object({
 
 const schema = z.object({
   produtoId: z.string().min(1, 'Selecione o produto acabado'),
-  categoria: z.enum(['PAO', 'BOLO', 'DOCE', 'SALGADO', 'MASSA', 'RECHEIO', 'OUTROS']),
+  categoriaId: z.string().optional().nullable(),
   rendimento: z.coerce.number().positive('Deve ser maior que 0'),
   unidadeRendimento: z.enum(['KG', 'G', 'UN']),
   tempoPreparo: z.coerce.number().int().positive().optional().or(z.literal('')),
@@ -38,7 +38,8 @@ export interface FichaTecnicaData {
   codigo: string
   produtoId: string
   produto: { id: string; nome: string; codigo: string }
-  categoria: string
+  categoriaId?: string | null
+  categoria?: { id: string; nome: string } | null
   rendimento: number
   unidadeRendimento: string
   tempoPreparo?: number
@@ -75,6 +76,11 @@ export function FichaTecnicaForm({ initialData, onSuccess, onCancel }: FichaTecn
     queryFn: () => api.get('/produtos', { params: { tipo: 'PRODUTO_ACABADO' } }).then(r => r.data),
   })
 
+  const { data: categorias = [] } = useQuery<{ id: string; nome: string; ativo: boolean }[]>({
+    queryKey: ['categorias'],
+    queryFn: () => api.get('/categorias').then(r => r.data),
+  })
+
   const { register, handleSubmit, control, watch, reset, setValue, formState: { errors } } = useForm<FormData>({
     resolver: zodResolver(schema),
     defaultValues: { ingredientes: [{ produtoId: '', quantidade: 0, unidadeMedida: 'KG' }] },
@@ -84,7 +90,7 @@ export function FichaTecnicaForm({ initialData, onSuccess, onCancel }: FichaTecn
     if (initialData) {
       reset({
         produtoId: initialData.produtoId,
-        categoria: initialData.categoria as FormData['categoria'],
+        categoriaId: initialData.categoriaId ?? '',
         rendimento: Number(initialData.rendimento),
         unidadeRendimento: initialData.unidadeRendimento as FormData['unidadeRendimento'],
         tempoPreparo: initialData.tempoPreparo ?? '',
@@ -113,6 +119,7 @@ export function FichaTecnicaForm({ initialData, onSuccess, onCancel }: FichaTecn
     mutationFn: (data: FormData) => {
       const payload = {
         ...data,
+        categoriaId: data.categoriaId || null,
         tempoPreparo: data.tempoPreparo || undefined,
         tempoFermentacao: data.tempoFermentacao || undefined,
         temperaturaForno: data.temperaturaForno || undefined,
@@ -149,16 +156,12 @@ export function FichaTecnicaForm({ initialData, onSuccess, onCancel }: FichaTecn
       </div>
 
       <div className="grid grid-cols-3 gap-4">
-        <FormField label="Categoria" error={errors.categoria?.message} required>
-          <Select {...register('categoria')} error={!!errors.categoria}>
-            <option value="">Selecione...</option>
-            <option value="PAO">Pão</option>
-            <option value="BOLO">Bolo</option>
-            <option value="DOCE">Doce</option>
-            <option value="SALGADO">Salgado</option>
-            <option value="MASSA">Massa</option>
-            <option value="RECHEIO">Recheio</option>
-            <option value="OUTROS">Outros</option>
+        <FormField label="Categoria">
+          <Select {...register('categoriaId')}>
+            <option value="">—</option>
+            {categorias.filter(c => c.ativo).map(c => (
+              <option key={c.id} value={c.id}>{c.nome}</option>
+            ))}
           </Select>
         </FormField>
         <FormField label="Rendimento" error={errors.rendimento?.message} required

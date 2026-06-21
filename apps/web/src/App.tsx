@@ -5,6 +5,7 @@ import { AppLayout } from './components/layout/AppLayout'
 import { DashboardPage } from './pages/DashboardPage'
 import { ProdutosPage } from './pages/cadastros/ProdutosPage'
 import { PessoasPage } from './pages/cadastros/PessoasPage'
+import { CategoriasPage } from './pages/cadastros/CategoriasPage'
 import { PosicaoEstoquePage } from './pages/estoque/PosicaoEstoquePage'
 import { NfEntradaPage } from './pages/estoque/NfEntradaPage'
 import { FichasTecnicasPage } from './pages/producao/FichasTecnicasPage'
@@ -12,9 +13,6 @@ import { OrdensProducaoPage } from './pages/producao/OrdensProducaoPage'
 import { PedidosVendaPage } from './pages/vendas/PedidosVendaPage'
 import { NotasFiscaisPage } from './pages/fiscal/NotasFiscaisPage'
 import { PlanoContasPage } from './pages/financeiro/PlanoContasPage'
-import { ImportacaoOFXPage } from './pages/financeiro/ImportacaoOFXPage'
-import { TransacoesPage } from './pages/financeiro/TransacoesPage'
-import { RegrasClassificacaoPage } from './pages/financeiro/RegrasClassificacaoPage'
 import { DREPage } from './pages/financeiro/DREPage'
 import { ContasBancariasPage } from './pages/financeiro/ContasBancariasPage'
 import { ExtratoPage } from './pages/financeiro/ExtratoPage'
@@ -36,6 +34,7 @@ export default function App() {
           <Route index element={<DashboardPage />} />
           <Route path="cadastros/produtos" element={<ProdutosPage />} />
           <Route path="cadastros/pessoas" element={<PessoasPage />} />
+          <Route path="cadastros/categorias" element={<CategoriasPage />} />
           <Route path="estoque/posicao" element={<PosicaoEstoquePage />} />
           <Route path="estoque/nf-entrada" element={<NfEntradaPage />} />
           <Route path="estoque/movimentacoes" element={<Navigate to="/estoque/posicao" replace />} />
@@ -44,11 +43,12 @@ export default function App() {
           <Route path="vendas/pedidos" element={<PedidosVendaPage />} />
           <Route path="fiscal/nfe" element={<NotasFiscaisPage />} />
           <Route path="financeiro/contas" element={<PlanoContasPage />} />
-          <Route path="financeiro/importar" element={<ImportacaoOFXPage />} />
-          <Route path="financeiro/transacoes" element={<TransacoesPage />} />
-          <Route path="financeiro/regras" element={<RegrasClassificacaoPage />} />
+          <Route path="financeiro/importar" element={<Navigate to="/financeiro/conciliacao" replace />} />
+          <Route path="financeiro/transacoes" element={<Navigate to="/financeiro/conciliacao" replace />} />
+          <Route path="financeiro/regras" element={<Navigate to="/financeiro/conciliacao" replace />} />
           <Route path="financeiro/contas-bancarias" element={<ContasBancariasPage />} />
           <Route path="financeiro/extrato/:id" element={<ExtratoPage />} />
+          <Route path="financeiro/caixa" element={<ExtratoPage />} />
           <Route path="financeiro/titulos" element={<TitulosPage />} />
           <Route path="financeiro/conciliacao" element={<ConciliacaoPage />} />
           <Route path="financeiro/dre" element={<DREPage />} />

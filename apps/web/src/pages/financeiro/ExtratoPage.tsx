@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, Fragment } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Plus, SlidersHorizontal, TrendingUp, TrendingDown } from 'lucide-react'
@@ -190,20 +190,45 @@ function ModalAjuste({
   )
 }
 
+interface ContaBancariaSimples {
+  id: string; nome: string; isCaixa: boolean; saldoAtual: number; ativo: boolean
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export function ExtratoPage() {
-  const { id } = useParams<{ id: string }>()
+  const { id: idParam } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const qc = useQueryClient()
   const hoje = new Date().toISOString().slice(0, 10)
   const primeiroDiaMes = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10)
+
+  // Modo Caixa: sem id na URL — o usuário escolhe a conta
+  const modoCaixa = !idParam
+  const [contaSelecionadaId, setContaSelecionadaId] = useState<string | undefined>(undefined)
+  const id = idParam ?? contaSelecionadaId
 
   const [dataInicio, setDataInicio] = useState(primeiroDiaMes)
   const [dataFim, setDataFim] = useState(hoje)
   const [pagina, setPagina] = useState(1)
   const [showLancamento, setShowLancamento] = useState(false)
   const [showAjuste, setShowAjuste] = useState(false)
+
+  // Carrega lista de contas apenas no modo Caixa
+  const { data: todasContas = [] } = useQuery<ContaBancariaSimples[]>({
+    queryKey: ['contas-bancarias'],
+    queryFn: () => api.get('/financeiro/contas-bancarias').then(r => r.data),
+    enabled: modoCaixa,
+  })
+
+  // Seleciona automaticamente a primeira conta (caixas têm prioridade)
+  useEffect(() => {
+    if (modoCaixa && todasContas.length > 0 && !contaSelecionadaId) {
+      const caixa = todasContas.find(c => c.ativo && c.isCaixa)
+      const primeira = todasContas.find(c => c.ativo)
+      setContaSelecionadaId((caixa ?? primeira)?.id)
+    }
+  }, [modoCaixa, todasContas, contaSelecionadaId])
 
   const { data, isLoading } = useQuery<ExtratoResponse>({
     queryKey: ['extrato', id, dataInicio, dataFim, pagina],
@@ -223,10 +248,8 @@ export function ExtratoPage() {
     qc.invalidateQueries({ queryKey: ['contas-bancarias'] })
   }
 
-  // Calcula saldo corrente da página (do mais antigo ao mais recente na lista)
   const lancamentos = data?.lancamentos ?? []
   let saldoCorrente = data?.conta.saldoAntes ?? 0
-  // Como a lista vem ordenada do mais recente ao mais antigo, inverte para calcular saldo
   const lancamentosComSaldo = [...lancamentos].reverse().map(l => {
     saldoCorrente += l.tipo === 'CREDITO' ? Number(l.valor) : -Number(l.valor)
     return { ...l, saldo: saldoCorrente }
@@ -234,22 +257,32 @@ export function ExtratoPage() {
 
   const saldoAtual = lancamentosComSaldo[0]?.saldo ?? data?.conta.saldoAntes ?? 0
 
+  // Agrupa lançamentos por dia (lista já está em ordem decrescente)
+  const porDia = lancamentosComSaldo.reduce<Map<string, typeof lancamentosComSaldo>>((acc, l) => {
+    const dia = l.data.slice(0, 10)
+    if (!acc.has(dia)) acc.set(dia, [])
+    acc.get(dia)!.push(l)
+    return acc
+  }, new Map())
+
   return (
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center gap-4">
-        <button onClick={() => navigate('/financeiro/contas-bancarias')} className="p-2 rounded-lg hover:bg-gray-100 text-gray-600 transition">
-          <ArrowLeft size={20} />
-        </button>
+        {!modoCaixa && (
+          <button onClick={() => navigate('/financeiro/contas-bancarias')} className="p-2 rounded-lg hover:bg-gray-100 text-gray-600 transition">
+            <ArrowLeft size={20} />
+          </button>
+        )}
         <div className="flex-1">
-          <h1 className="text-2xl font-bold text-gray-900">{data?.conta.nome ?? 'Extrato'}</h1>
+          <h1 className="text-2xl font-bold text-gray-900">{modoCaixa ? 'Caixa' : (data?.conta.nome ?? 'Extrato')}</h1>
           <p className="text-sm text-gray-500">Extrato de movimentações</p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="secondary" size="sm" onClick={() => setShowAjuste(true)}>
+          <Button variant="secondary" size="sm" onClick={() => setShowAjuste(true)} disabled={!id}>
             <SlidersHorizontal size={14} /> Ajustar Saldo
           </Button>
-          <Button size="sm" onClick={() => setShowLancamento(true)}>
+          <Button size="sm" onClick={() => setShowLancamento(true)} disabled={!id}>
             <Plus size={14} /> Lançamento
           </Button>
         </div>
@@ -264,6 +297,19 @@ export function ExtratoPage() {
           </div>
         </div>
         <div className="flex items-end gap-3 flex-1">
+          {modoCaixa && todasContas.filter(c => c.ativo).length > 0 && (
+            <FormField label="Conta">
+              <select
+                value={contaSelecionadaId ?? ''}
+                onChange={e => { setContaSelecionadaId(e.target.value); setPagina(1) }}
+                className="w-full min-w-[280px] rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500 bg-white"
+              >
+                {todasContas.filter(c => c.ativo).map(c => (
+                  <option key={c.id} value={c.id}>{c.nome}</option>
+                ))}
+              </select>
+            </FormField>
+          )}
           <FormField label="De">
             <Input type="date" value={dataInicio} onChange={e => { setDataInicio(e.target.value); setPagina(1) }} />
           </FormField>
@@ -285,33 +331,86 @@ export function ExtratoPage() {
               <th className="text-right px-4 py-3">Saldo</th>
             </tr>
           </thead>
+          {/* Saldo do dia anterior à data inicial */}
+          {data && (
+            <tbody>
+              <tr className="bg-blue-50 border-b border-blue-100">
+                <td className="px-4 py-2 text-xs font-semibold text-blue-600 whitespace-nowrap">
+                  Saldo anterior
+                </td>
+                <td className="px-4 py-2 text-xs text-blue-400">
+                  até {fmtDate(new Date(new Date(dataInicio + 'T12:00:00').getTime() - 86400000).toISOString().slice(0, 10))}
+                </td>
+                <td className="hidden md:table-cell" />
+                <td />
+                <td className="px-4 py-2 text-right whitespace-nowrap">
+                  <span className={clsx('text-sm font-bold', data.conta.saldoAntes >= 0 ? 'text-blue-700' : 'text-red-700')}>
+                    {fmt(data.conta.saldoAntes)}
+                  </span>
+                </td>
+              </tr>
+            </tbody>
+          )}
+
           <tbody className="divide-y divide-gray-50">
             {isLoading ? (
               <tr><td colSpan={5} className="text-center py-12 text-gray-400">Carregando...</td></tr>
             ) : lancamentosComSaldo.length === 0 ? (
               <tr><td colSpan={5} className="text-center py-12 text-gray-400">Nenhum lançamento no período</td></tr>
-            ) : lancamentosComSaldo.map(l => (
-              <tr key={l.id} className="hover:bg-gray-50 transition">
-                <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{fmtDate(l.data)}</td>
-                <td className="px-4 py-3">
-                  <p className="text-gray-900">{l.descricao || l.nomeOriginal || '—'}</p>
-                  {l.fonteClassificacao === 'MANUAL' && (
-                    <span className="text-xs text-gray-400">Manual</span>
-                  )}
-                </td>
-                <td className="px-4 py-3 text-gray-400 text-xs hidden md:table-cell">
-                  {l.contaFinanceira ? `${l.contaFinanceira.codigo} — ${l.contaFinanceira.nome}` : '—'}
-                </td>
-                <td className="px-4 py-3 text-right font-medium whitespace-nowrap">
-                  <span className={l.tipo === 'CREDITO' ? 'text-green-600' : 'text-red-600'}>
-                    {l.tipo === 'CREDITO' ? '+' : '-'} {fmt(Number(l.valor))}
-                  </span>
-                </td>
-                <td className="px-4 py-3 text-right whitespace-nowrap">
-                  <span className={clsx('font-semibold', l.saldo >= 0 ? 'text-gray-800' : 'text-red-700')}>{fmt(l.saldo)}</span>
-                </td>
-              </tr>
-            ))}
+            ) : Array.from(porDia.entries()).map(([dia, lancsDia]) => {
+              const saldoDia = lancsDia[0].saldo
+              const entradas = lancsDia.filter(l => l.tipo === 'CREDITO').reduce((s, l) => s + Number(l.valor), 0)
+              const saidas   = lancsDia.filter(l => l.tipo === 'DEBITO').reduce((s, l) => s + Number(l.valor), 0)
+              const liquido  = entradas - saidas
+              return (
+                <Fragment key={dia}>
+                  {lancsDia.map(l => (
+                    <tr key={l.id} className="hover:bg-gray-50 transition">
+                      <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{fmtDate(l.data)}</td>
+                      <td className="px-4 py-3">
+                        <p className="text-gray-900">{l.descricao || l.nomeOriginal || '—'}</p>
+                        {l.fonteClassificacao === 'MANUAL' && (
+                          <span className="text-xs text-gray-400">Manual</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-gray-400 text-xs hidden md:table-cell">
+                        {l.contaFinanceira ? `${l.contaFinanceira.codigo} — ${l.contaFinanceira.nome}` : '—'}
+                      </td>
+                      <td className="px-4 py-3 text-right font-medium whitespace-nowrap">
+                        <span className={l.tipo === 'CREDITO' ? 'text-green-600' : 'text-red-600'}>
+                          {l.tipo === 'CREDITO' ? '+' : '-'} {fmt(Number(l.valor))}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-right whitespace-nowrap">
+                        <span className={clsx('font-semibold', l.saldo >= 0 ? 'text-gray-800' : 'text-red-700')}>{fmt(l.saldo)}</span>
+                      </td>
+                    </tr>
+                  ))}
+                  {/* Linha de saldo do dia */}
+                  <tr className="bg-gray-50 border-t-2 border-gray-200">
+                    <td className="px-4 py-2 text-xs font-semibold text-gray-500 whitespace-nowrap">
+                      Saldo do dia
+                    </td>
+                    <td className="px-4 py-2 text-xs text-gray-400 whitespace-nowrap">
+                      {lancsDia.length} lançamento{lancsDia.length !== 1 ? 's' : ''}
+                      {entradas > 0 && <span className="ml-2 text-green-600">+{fmt(entradas)}</span>}
+                      {saidas > 0 && <span className="ml-1 text-red-500">-{fmt(saidas)}</span>}
+                      {' · '}
+                      <span className={clsx('font-medium', liquido >= 0 ? 'text-green-600' : 'text-red-600')}>
+                        {liquido >= 0 ? '+' : ''}{fmt(liquido)}
+                      </span>
+                    </td>
+                    <td className="hidden md:table-cell" />
+                    <td />
+                    <td className="px-4 py-2 text-right whitespace-nowrap">
+                      <span className={clsx('text-sm font-bold', saldoDia >= 0 ? 'text-gray-800' : 'text-red-700')}>
+                        {fmt(saldoDia)}
+                      </span>
+                    </td>
+                  </tr>
+                </Fragment>
+              )
+            })}
           </tbody>
         </table>
 

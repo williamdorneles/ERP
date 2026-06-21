@@ -7,13 +7,14 @@ export async function producaoRoutes(app: FastifyInstance) {
 
   // Fichas Técnicas
   app.get('/fichas', async (request) => {
-    const { categoria, mostrarInativos } = request.query as { categoria?: string; mostrarInativos?: string }
+    const { categoriaId, mostrarInativos } = request.query as { categoriaId?: string; mostrarInativos?: string }
     return prisma.fichaTecnica.findMany({
       where: {
         ...(mostrarInativos !== 'true' && { ativo: true }),
-        ...(categoria && { categoria: categoria as never }),
+        ...(categoriaId && { categoriaId }),
       },
       include: {
+        categoria: { select: { id: true, nome: true } },
         produto: { select: { id: true, nome: true, codigo: true } },
         ingredientes: {
           include: { produto: { select: { nome: true, codigo: true, unidadeMedida: true, custoUnitario: true } } },
@@ -39,7 +40,7 @@ export async function producaoRoutes(app: FastifyInstance) {
 
   app.post('/fichas', async (request, reply) => {
     const { ingredientes, ...fichaData } = request.body as {
-      produtoId: string; categoria: string
+      produtoId: string; categoriaId?: string
       rendimento: number; unidadeRendimento: string
       tempoPreparo?: number; tempoFermentacao?: number; temperaturaForno?: number
       instrucoes?: string
@@ -64,7 +65,7 @@ export async function producaoRoutes(app: FastifyInstance) {
   app.put('/fichas/:id', async (request, reply) => {
     const { id } = request.params as { id: string }
     const { ingredientes, ...fichaData } = request.body as {
-      produtoId: string; categoria: string
+      produtoId: string; categoriaId?: string
       rendimento: number; unidadeRendimento: string
       tempoPreparo?: number; tempoFermentacao?: number; temperaturaForno?: number
       instrucoes?: string

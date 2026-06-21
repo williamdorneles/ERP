@@ -37,9 +37,9 @@ export declare const ItemPedidoSchema: z.ZodObject<{
     desconto: z.ZodDefault<z.ZodNumber>;
 }, "strip", z.ZodTypeAny, {
     quantidade: number;
-    desconto: number;
     produtoId: string;
     precoUnitario: number;
+    desconto: number;
 }, {
     quantidade: number;
     produtoId: string;
@@ -59,9 +59,9 @@ export declare const PedidoVendaSchema: z.ZodObject<{
         desconto: z.ZodDefault<z.ZodNumber>;
     }, "strip", z.ZodTypeAny, {
         quantidade: number;
-        desconto: number;
         produtoId: string;
         precoUnitario: number;
+        desconto: number;
     }, {
         quantidade: number;
         produtoId: string;
@@ -74,40 +74,99 @@ export declare const PedidoVendaSchema: z.ZodObject<{
     formaPagamento: z.ZodEnum<["DINHEIRO", "CREDITO", "DEBITO", "PIX", "PRAZO"]>;
     criadoEm: z.ZodDate;
 }, "strip", z.ZodTypeAny, {
+    status: "ABERTO" | "CONFIRMADO" | "EM_PREPARO" | "ENTREGUE" | "CANCELADO";
     id: string;
     criadoEm: Date;
     numero: string;
-    status: "ABERTO" | "CONFIRMADO" | "EM_PREPARO" | "ENTREGUE" | "CANCELADO";
-    canal: "BALCAO" | "ATACADO" | "DELIVERY" | "ONLINE";
-    subtotal: number;
     desconto: number;
-    total: number;
-    formaPagamento: "DINHEIRO" | "CREDITO" | "DEBITO" | "PIX" | "PRAZO";
+    canal: "BALCAO" | "ATACADO" | "DELIVERY" | "ONLINE";
     itens: {
         quantidade: number;
-        desconto: number;
         produtoId: string;
         precoUnitario: number;
+        desconto: number;
     }[];
+    subtotal: number;
+    total: number;
+    formaPagamento: "DEBITO" | "CREDITO" | "DINHEIRO" | "PIX" | "PRAZO";
     clienteId?: string | undefined;
 }, {
+    status: "ABERTO" | "CONFIRMADO" | "EM_PREPARO" | "ENTREGUE" | "CANCELADO";
     id: string;
     criadoEm: Date;
     numero: string;
-    status: "ABERTO" | "CONFIRMADO" | "EM_PREPARO" | "ENTREGUE" | "CANCELADO";
     canal: "BALCAO" | "ATACADO" | "DELIVERY" | "ONLINE";
-    subtotal: number;
-    total: number;
-    formaPagamento: "DINHEIRO" | "CREDITO" | "DEBITO" | "PIX" | "PRAZO";
     itens: {
         quantidade: number;
         produtoId: string;
         precoUnitario: number;
         desconto?: number | undefined;
     }[];
+    subtotal: number;
+    total: number;
+    formaPagamento: "DEBITO" | "CREDITO" | "DINHEIRO" | "PIX" | "PRAZO";
     desconto?: number | undefined;
     clienteId?: string | undefined;
 }>;
+export declare const CriarPedidoVendaSchema: z.ZodObject<{
+    pessoaId: z.ZodOptional<z.ZodString>;
+    canal: z.ZodEnum<["BALCAO", "ATACADO", "DELIVERY", "ONLINE"]>;
+    formaPagamento: z.ZodEnum<["DINHEIRO", "CREDITO", "DEBITO", "PIX", "PRAZO"]>;
+    desconto: z.ZodDefault<z.ZodNumber>;
+    vendedorId: z.ZodOptional<z.ZodString>;
+    observacao: z.ZodOptional<z.ZodString>;
+    itens: z.ZodArray<z.ZodObject<{
+        produtoId: z.ZodString;
+        quantidade: z.ZodNumber;
+        precoUnitario: z.ZodNumber;
+        desconto: z.ZodDefault<z.ZodNumber>;
+    }, "strip", z.ZodTypeAny, {
+        quantidade: number;
+        produtoId: string;
+        precoUnitario: number;
+        desconto: number;
+    }, {
+        quantidade: number;
+        produtoId: string;
+        precoUnitario: number;
+        desconto?: number | undefined;
+    }>, "many">;
+}, "strip", z.ZodTypeAny, {
+    desconto: number;
+    canal: "BALCAO" | "ATACADO" | "DELIVERY" | "ONLINE";
+    itens: {
+        quantidade: number;
+        produtoId: string;
+        precoUnitario: number;
+        desconto: number;
+    }[];
+    formaPagamento: "DEBITO" | "CREDITO" | "DINHEIRO" | "PIX" | "PRAZO";
+    observacao?: string | undefined;
+    pessoaId?: string | undefined;
+    vendedorId?: string | undefined;
+}, {
+    canal: "BALCAO" | "ATACADO" | "DELIVERY" | "ONLINE";
+    itens: {
+        quantidade: number;
+        produtoId: string;
+        precoUnitario: number;
+        desconto?: number | undefined;
+    }[];
+    formaPagamento: "DEBITO" | "CREDITO" | "DINHEIRO" | "PIX" | "PRAZO";
+    observacao?: string | undefined;
+    pessoaId?: string | undefined;
+    desconto?: number | undefined;
+    vendedorId?: string | undefined;
+}>;
+export declare const AtualizarStatusPedidoSchema: z.ZodObject<{
+    status: z.ZodEnum<["ABERTO", "CONFIRMADO", "EM_PREPARO", "ENTREGUE", "CANCELADO"]>;
+}, "strip", z.ZodTypeAny, {
+    status: "ABERTO" | "CONFIRMADO" | "EM_PREPARO" | "ENTREGUE" | "CANCELADO";
+}, {
+    status: "ABERTO" | "CONFIRMADO" | "EM_PREPARO" | "ENTREGUE" | "CANCELADO";
+}>;
 export type Cliente = z.infer<typeof ClienteSchema>;
 export type PedidoVenda = z.infer<typeof PedidoVendaSchema>;
+export type CriarPedidoVendaInput = z.infer<typeof CriarPedidoVendaSchema>;
+export type AtualizarStatusPedidoInput = z.infer<typeof AtualizarStatusPedidoSchema>;
 //# sourceMappingURL=vendas.d.ts.map

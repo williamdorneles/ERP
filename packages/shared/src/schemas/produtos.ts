@@ -1,16 +1,11 @@
 import { z } from 'zod'
 
-const CategoriaEnum = z.enum([
-  'FARINHA', 'GORDURA', 'ACUCAR', 'FERMENTO', 'LATICINIOS', 'OVOS', 'EMBALAGEM',
-  'PAO', 'BOLO', 'DOCE', 'SALGADO', 'MASSA', 'RECHEIO', 'OUTROS',
-])
-
 const UnidadeMedidaEnum = z.enum(['KG', 'G', 'L', 'ML', 'UN', 'CX', 'PCT'])
 
 export const CriarProdutoSchema = z.object({
   nome: z.string().min(2, 'Nome deve ter ao menos 2 caracteres').max(200),
   tipo: z.enum(['INSUMO', 'PRODUTO_ACABADO', 'INSUMO_PRODUTO']),
-  categoria: CategoriaEnum.optional(),
+  categoriaId: z.string().uuid().optional().nullable(),
   unidadeMedida: UnidadeMedidaEnum.default('UN'),
   estoqueMinimo: z.number().min(0).default(0),
   custoUnitario: z.number().min(0).default(0),

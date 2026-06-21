@@ -6,14 +6,20 @@ import clsx from 'clsx'
 import { FichaTecnicaForm, type FichaTecnicaData } from '../../components/forms/FichaTecnicaForm'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 
-const categoriaCor: Record<string, string> = {
-  PAO: 'bg-amber-100 text-amber-800',
-  BOLO: 'bg-pink-100 text-pink-800',
-  DOCE: 'bg-rose-100 text-rose-800',
-  SALGADO: 'bg-orange-100 text-orange-800',
-  MASSA: 'bg-yellow-100 text-yellow-800',
-  RECHEIO: 'bg-purple-100 text-purple-800',
-  OUTROS: 'bg-gray-100 text-gray-700',
+const categoriaCores = [
+  'bg-amber-100 text-amber-800',
+  'bg-pink-100 text-pink-800',
+  'bg-rose-100 text-rose-800',
+  'bg-orange-100 text-orange-800',
+  'bg-yellow-100 text-yellow-800',
+  'bg-purple-100 text-purple-800',
+  'bg-blue-100 text-blue-800',
+  'bg-emerald-100 text-emerald-800',
+  'bg-gray-100 text-gray-700',
+]
+function corCategoria(nome: string) {
+  const idx = (nome.charCodeAt(0) + nome.length) % categoriaCores.length
+  return categoriaCores[idx]
 }
 
 export function FichasTecnicasPage() {
@@ -128,9 +134,11 @@ export function FichasTecnicasPage() {
                 )}>
                 <div className="flex items-start justify-between mb-3">
                   <div>
-                    <span className={clsx('text-xs px-2 py-0.5 rounded-full font-medium', categoriaCor[ficha.categoria])}>
-                      {ficha.categoria}
-                    </span>
+                    {ficha.categoria && (
+                      <span className={clsx('text-xs px-2 py-0.5 rounded-full font-medium', corCategoria(ficha.categoria.nome))}>
+                        {ficha.categoria.nome}
+                      </span>
+                    )}
                     <h3 className="font-semibold text-gray-900 mt-2">{ficha.produto.nome}</h3>
                     <p className="text-xs text-gray-400 font-mono">{ficha.produto.codigo} · {ficha.codigo}</p>
                   </div>

@@ -67,6 +67,7 @@ interface CurrencyInputProps {
   value: number | undefined
   onChange: (value: number) => void
   onBlur?: () => void
+  onKeyDown?: React.KeyboardEventHandler<HTMLInputElement>
   decimals?: number
   error?: boolean
   placeholder?: string
@@ -74,7 +75,7 @@ interface CurrencyInputProps {
   className?: string
 }
 
-export function CurrencyInput({ value, onChange, onBlur, decimals = 2, error, placeholder, disabled, className }: CurrencyInputProps) {
+export function CurrencyInput({ value, onChange, onBlur, onKeyDown, decimals = 2, error, placeholder, disabled, className }: CurrencyInputProps) {
   const fmt = (n: number) =>
     n.toLocaleString('pt-BR', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
 
@@ -119,6 +120,7 @@ export function CurrencyInput({ value, onChange, onBlur, decimals = 2, error, pl
         onChange={handleChange}
         onFocus={() => setFocused(true)}
         onBlur={handleBlur}
+        onKeyDown={onKeyDown}
         placeholder={placeholder ?? (decimals === 4 ? '0,0000' : '0,00')}
         disabled={disabled}
         className={clsx(
