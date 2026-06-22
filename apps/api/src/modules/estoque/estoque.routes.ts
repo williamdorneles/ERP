@@ -3,6 +3,7 @@ import { prisma } from '@erp/database'
 import { z } from 'zod'
 import { CriarMovimentacaoSchema } from '@erp/shared'
 import { requirePerfil } from '../../plugins/auth.plugin.js'
+import { propagarCustoComponente } from '../produtos/custo-bom.service.js'
 
 const QueryMovimentacoesSchema = z.object({
   produtoId: z.string().uuid().optional(),
@@ -31,19 +32,116 @@ export async function estoqueRoutes(app: FastifyInstance) {
   app.post('/movimentacoes', async (request, reply) => {
     const data = CriarMovimentacaoSchema.parse(request.body)
 
-    const result = await prisma.$transaction(async (tx) => {
-      const mov = await tx.movimentacaoEstoque.create({ data: data as never })
+    const prod = await prisma.produto.findUnique({
+      where: { id: data.produtoId },
+      select: { estoqueAtual: true, custoMedio: true },
+    })
+    if (!prod) return reply.code(404).send({ error: 'Produto não encontrado.' })
 
-      const delta = data.tipo === 'ENTRADA' ? data.quantidade : -data.quantidade
+    if (data.tipo === 'ENTRADA' && (data.custoUnitario == null || data.custoUnitario <= 0)) {
+      return reply.code(400).send({ error: 'Informe o custo unitário para movimentações de entrada.' })
+    }
+
+    const estoqueAtual = Number(prod.estoqueAtual)
+    const custoMedioAtual = Number(prod.custoMedio)
+
+    // Método de custeio configurável (MEDIO padrão ou ULTIMO)
+    const configMetodo = await prisma.configuracao.findUnique({ where: { chave: 'METODO_CUSTO' } })
+    const metodo = configMetodo?.valor ?? 'MEDIO'
+
+    const result = await prisma.$transaction(async (tx) => {
+      // ENTRADA: recalcula custo conforme o método e atualiza o custo do produto
+      if (data.tipo === 'ENTRADA') {
+        const custoEntrada = +Number(data.custoUnitario).toFixed(4)
+        const novoEstoque = estoqueAtual + data.quantidade
+        const novoCustoMedio = +(novoEstoque > 0
+          ? (estoqueAtual * custoMedioAtual + data.quantidade * custoEntrada) / novoEstoque
+          : custoEntrada).toFixed(4)
+        // Custo ativo: ULTIMO usa o custo da entrada; MEDIO usa a média ponderada
+        const custoAtivo = metodo === 'ULTIMO' ? custoEntrada : novoCustoMedio
+
+        const mov = await tx.movimentacaoEstoque.create({
+          data: {
+            produtoId: data.produtoId,
+            tipo: data.tipo,
+            quantidade: data.quantidade,
+            custoUnitario: custoEntrada,
+            lote: data.lote,
+            dataVencimento: data.dataVencimento,
+            observacao: data.observacao,
+          },
+        })
+        await tx.produto.update({
+          where: { id: data.produtoId },
+          data: {
+            estoqueAtual: { increment: data.quantidade },
+            ultimoCusto: custoEntrada,
+            custoMedio: novoCustoMedio,
+            custoUnitario: custoAtivo,
+          },
+        })
+
+        // Registra no histórico de custos do produto (aba Custos do cadastro)
+        await tx.produtoCusto.create({
+          data: {
+            produtoId: data.produtoId,
+            custo: custoAtivo,
+            motivo: 'MOVIMENTACAO_ESTOQUE',
+            observacao: `Entrada manual de estoque — ${data.quantidade} un. a R$ ${custoEntrada.toFixed(4)} (método ${metodo === 'ULTIMO' ? 'último custo' : 'custo médio'})${data.observacao ? ` — ${data.observacao}` : ''}`,
+          },
+        })
+
+        // Propaga o novo custo para produtos com BOM que usam este como componente
+        await propagarCustoComponente(tx, data.produtoId)
+        return mov
+      }
+
+      // SAÍDA / PERDA / AJUSTE: baixa pelo custo médio atual, sem alterar o custo do produto
+      const mov = await tx.movimentacaoEstoque.create({
+        data: {
+          produtoId: data.produtoId,
+          tipo: data.tipo,
+          quantidade: data.quantidade,
+          custoUnitario: +custoMedioAtual.toFixed(4),
+          lote: data.lote,
+          dataVencimento: data.dataVencimento,
+          observacao: data.observacao,
+        },
+      })
       await tx.produto.update({
         where: { id: data.produtoId },
-        data: { estoqueAtual: { increment: delta } },
+        data: { estoqueAtual: { increment: -data.quantidade } },
       })
-
       return mov
     })
 
     return reply.code(201).send(result)
+  })
+
+  app.delete('/movimentacoes/:id', async (request, reply) => {
+    const { id } = request.params as { id: string }
+
+    const mov = await prisma.movimentacaoEstoque.findUnique({ where: { id } })
+    if (!mov) return reply.code(404).send({ error: 'Movimentação não encontrada.' })
+
+    // Só permite excluir lançamentos manuais (não gerados por apontamento ou NF)
+    if (mov.apontamentoId || mov.nfEntradaId) {
+      return reply.code(400).send({
+        error: 'Apenas movimentações manuais podem ser excluídas. Esta foi gerada por apontamento de produção ou NF de entrada.',
+      })
+    }
+
+    await prisma.$transaction(async (tx) => {
+      // Reverte o efeito da movimentação no estoque
+      const delta = mov.tipo === 'ENTRADA' ? -Number(mov.quantidade) : Number(mov.quantidade)
+      await tx.produto.update({
+        where: { id: mov.produtoId },
+        data: { estoqueAtual: { increment: delta } },
+      })
+      await tx.movimentacaoEstoque.delete({ where: { id } })
+    })
+
+    return { ok: true }
   })
 
   app.get('/alertas', async () => {

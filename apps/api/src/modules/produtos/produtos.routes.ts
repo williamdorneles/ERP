@@ -3,6 +3,7 @@ import { prisma } from '@erp/database'
 import { z } from 'zod'
 import { CriarProdutoSchema, AtualizarProdutoSchema } from '@erp/shared'
 import { requirePerfil } from '../../plugins/auth.plugin.js'
+import { calcularCustoBom, propagarCustoComponente } from './custo-bom.service.js'
 
 const UNIDADES = ['KG', 'G', 'L', 'ML', 'UN', 'CX', 'PCT'] as const
 
@@ -20,17 +21,6 @@ const BomSchema = z.object({
   })).min(1),
 })
 
-function calcularCustoBom(
-  itens: { quantidade: number; percPerda: number; componente: { custoUnitario: unknown } }[],
-  qtdeProduzida: number,
-): number {
-  const total = itens.reduce((acc, item) => {
-    const custo = Number(item.componente.custoUnitario)
-    const fator = 1 + item.percPerda / 100
-    return acc + custo * Number(item.quantidade) * fator
-  }, 0)
-  return +(total / qtdeProduzida).toFixed(4)
-}
 
 const QueryProdutosSchema = z.object({
   busca: z.string().max(100).optional(),
@@ -133,6 +123,9 @@ export async function produtosRoutes(app: FastifyInstance) {
         data: { produtoId: id, custo: custoUnitario, motivo: 'BOM', observacao: 'Recálculo por BOM' },
       })
 
+      // Este produto pode ser componente de outros BOMs → propaga em cascata
+      await propagarCustoComponente(tx, id)
+
       return nova
     })
 
@@ -203,12 +196,22 @@ export async function produtosRoutes(app: FastifyInstance) {
   app.put('/:id', async (request) => {
     const { id } = request.params as { id: string }
     const data = AtualizarProdutoSchema.parse(request.body)
-    const produto = await prisma.produto.update({ where: { id }, data: data as never })
-    if (data.custoUnitario !== undefined) {
-      await prisma.produtoCusto.create({
-        data: { produtoId: id, custo: Number(data.custoUnitario), motivo: 'MANUAL', observacao: 'Edição manual no cadastro' },
-      })
-    }
+
+    const produto = await prisma.$transaction(async (tx) => {
+      const atual = await tx.produto.findUnique({ where: { id }, select: { custoUnitario: true } })
+      const atualizado = await tx.produto.update({ where: { id }, data: data as never })
+
+      // Só registra/propaga quando o custo realmente mudar (evita lixo a cada "Salvar")
+      if (data.custoUnitario !== undefined && atual && Number(atual.custoUnitario) !== Number(data.custoUnitario)) {
+        await tx.produtoCusto.create({
+          data: { produtoId: id, custo: Number(data.custoUnitario), motivo: 'MANUAL', observacao: 'Edição manual no cadastro' },
+        })
+        // Propaga para os produtos com BOM que usam este como componente
+        await propagarCustoComponente(tx, id)
+      }
+      return atualizado
+    })
+
     return produto
   })
 
@@ -222,6 +225,40 @@ export async function produtosRoutes(app: FastifyInstance) {
       take: 100,
       include: { nfEntrada: { select: { numero: true, dataEntrada: true } } },
     })
+  })
+
+  // Exclui um registro do histórico de custos e reverte o custo do produto
+  // para o registro mais recente restante (permite controle manual do custo)
+  app.delete('/:id/custos/:custoId', async (request, reply) => {
+    const { id, custoId } = request.params as { id: string; custoId: string }
+
+    const registro = await prisma.produtoCusto.findUnique({ where: { id: custoId } })
+    if (!registro || registro.produtoId !== id) {
+      return reply.code(404).send({ error: 'Registro de custo não encontrado.' })
+    }
+
+    const resultado = await prisma.$transaction(async (tx) => {
+      await tx.produtoCusto.delete({ where: { id: custoId } })
+
+      // Custo passa a ser o do registro mais recente que sobrou (ou 0 se não houver)
+      const anterior = await tx.produtoCusto.findFirst({
+        where: { produtoId: id },
+        orderBy: { criadoEm: 'desc' },
+      })
+      const custo = +(anterior ? Number(anterior.custo) : 0).toFixed(4)
+
+      await tx.produto.update({
+        where: { id },
+        data: { custoUnitario: custo, custoMedio: custo, ultimoCusto: custo },
+      })
+
+      // Propaga o novo custo para produtos com BOM que usam este como componente
+      await propagarCustoComponente(tx, id)
+
+      return { custoAtual: custo }
+    })
+
+    return resultado
   })
 
   app.patch('/:id/toggle-ativo', async (request, reply) => {

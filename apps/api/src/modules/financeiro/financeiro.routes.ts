@@ -112,6 +112,64 @@ export async function financeiroRoutes(app: FastifyInstance) {
     return { conta: { ...conta, saldoAntes }, lancamentos, total, pagina: page, limite: lim, paginas: Math.ceil(total / lim) }
   })
 
+  // ── Transferência entre Contas ────────────────────────────────
+
+  app.post('/transferencias', async (request, reply) => {
+    const { contaOrigemId, contaDestinoId, valor, data, descricao } = request.body as {
+      contaOrigemId: string; contaDestinoId: string; valor: number; data: string; descricao?: string
+    }
+
+    if (contaOrigemId === contaDestinoId)
+      return reply.code(400).send({ error: 'Conta de origem e destino devem ser diferentes.' })
+    if (!valor || valor <= 0)
+      return reply.code(400).send({ error: 'Valor deve ser maior que zero.' })
+
+    const [origem, destino] = await Promise.all([
+      prisma.contaBancaria.findUnique({ where: { id: contaOrigemId } }),
+      prisma.contaBancaria.findUnique({ where: { id: contaDestinoId } }),
+    ])
+    if (!origem || !destino) return reply.code(404).send({ error: 'Conta não encontrada.' })
+
+    const transferId = crypto.randomUUID()
+    const desc = descricao?.trim() || 'Transferência'
+    const dataDate = new Date(data)
+
+    await prisma.$transaction([
+      prisma.transacaoFinanceira.create({
+        data: {
+          contaBancariaId: contaOrigemId,
+          fitid: `TRANSF-${transferId}-SAIDA`,
+          data: dataDate, valor, tipo: 'DEBITO',
+          descricao: `${desc} → ${destino.nome}`,
+          nomeOriginal: `${desc} → ${destino.nome}`,
+          fonteClassificacao: 'TRANSFERENCIA',
+          confiancaClassificacao: 1, status: 'REVISADO',
+        },
+      }),
+      prisma.transacaoFinanceira.create({
+        data: {
+          contaBancariaId: contaDestinoId,
+          fitid: `TRANSF-${transferId}-ENTRADA`,
+          data: dataDate, valor, tipo: 'CREDITO',
+          descricao: `${desc} ← ${origem.nome}`,
+          nomeOriginal: `${desc} ← ${origem.nome}`,
+          fonteClassificacao: 'TRANSFERENCIA',
+          confiancaClassificacao: 1, status: 'REVISADO',
+        },
+      }),
+    ])
+
+    return reply.code(201).send({ ok: true, transferId })
+  })
+
+  app.delete('/transferencias/:transferId', async (request, reply) => {
+    const { transferId } = request.params as { transferId: string }
+    await prisma.transacaoFinanceira.deleteMany({
+      where: { fitid: { in: [`TRANSF-${transferId}-SAIDA`, `TRANSF-${transferId}-ENTRADA`] } },
+    })
+    return reply.send({ ok: true })
+  })
+
   // ── Lançamento Manual ─────────────────────────────────────────
 
   app.post('/contas-bancarias/:id/lancamento', async (request, reply) => {
@@ -139,7 +197,51 @@ export async function financeiroRoutes(app: FastifyInstance) {
     return reply.code(201).send(lancamento)
   })
 
+  app.put('/transacoes/:id', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const { tipo, valor, data, descricao, contaFinanceiraId } = LancamentoManualSchema.parse(request.body)
+
+    const tx = await prisma.transacaoFinanceira.findUnique({ where: { id } })
+    if (!tx) return reply.code(404).send({ error: 'Lançamento não encontrado.' })
+    if (!['MANUAL', 'AJUSTE'].includes(tx.fonteClassificacao ?? '')) return reply.code(403).send({ error: 'Apenas lançamentos manuais e ajustes podem ser editados.' })
+
+    const atualizado = await prisma.transacaoFinanceira.update({
+      where: { id },
+      data: { tipo, valor, data: new Date(data), descricao, nomeOriginal: descricao, contaFinanceiraId: contaFinanceiraId ?? null },
+    })
+    return atualizado
+  })
+
+  app.delete('/transacoes/:id', async (request, reply) => {
+    const { id } = request.params as { id: string }
+
+    const tx = await prisma.transacaoFinanceira.findUnique({ where: { id } })
+    if (!tx) return reply.code(404).send({ error: 'Lançamento não encontrado.' })
+    if (!['MANUAL', 'AJUSTE'].includes(tx.fonteClassificacao ?? '')) return reply.code(403).send({ error: 'Apenas lançamentos manuais e ajustes podem ser excluídos.' })
+
+    await prisma.transacaoFinanceira.delete({ where: { id } })
+    return reply.send({ ok: true })
+  })
+
   // ── Ajuste de Saldo ───────────────────────────────────────────
+
+  // Retorna o saldo da conta até (inclusive) uma data específica
+  app.get('/contas-bancarias/:id/saldo', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const { ate } = request.query as { ate?: string }
+
+    const conta = await prisma.contaBancaria.findUnique({ where: { id } })
+    if (!conta) return reply.code(404).send({ error: 'Conta não encontrada.' })
+
+    const grupos = await prisma.transacaoFinanceira.groupBy({
+      by: ['tipo'],
+      where: { contaBancariaId: id, ...(ate && { data: { lte: new Date(ate) } }) },
+      _sum: { valor: true },
+    })
+    const cred = grupos.find(g => g.tipo === 'CREDITO')?._sum.valor ?? 0
+    const deb  = grupos.find(g => g.tipo === 'DEBITO')?._sum.valor  ?? 0
+    return { saldo: Number(conta.saldoInicial) + Number(cred) - Number(deb) }
+  })
 
   app.post('/contas-bancarias/:id/ajuste-saldo', async (request, reply) => {
     const { id } = request.params as { id: string }
@@ -148,10 +250,10 @@ export async function financeiroRoutes(app: FastifyInstance) {
     const conta = await prisma.contaBancaria.findUnique({ where: { id } })
     if (!conta) return reply.code(404).send({ error: 'Conta não encontrada.' })
 
-    // Calcula saldo atual
+    // Calcula saldo ATÉ a data do ajuste (não considera lançamentos futuros)
     const grupos = await prisma.transacaoFinanceira.groupBy({
       by: ['tipo'],
-      where: { contaBancariaId: id },
+      where: { contaBancariaId: id, data: { lte: new Date(data) } },
       _sum: { valor: true },
     })
     const cred = grupos.find(g => g.tipo === 'CREDITO')?._sum.valor ?? 0
@@ -172,7 +274,7 @@ export async function financeiroRoutes(app: FastifyInstance) {
         tipo: diferenca > 0 ? 'CREDITO' : 'DEBITO',
         descricao: descricao ?? 'Ajuste de saldo',
         nomeOriginal: descricao ?? 'Ajuste de saldo',
-        fonteClassificacao: 'MANUAL',
+        fonteClassificacao: 'AJUSTE',
         confiancaClassificacao: 1,
         status: 'REVISADO',
       },

@@ -75,11 +75,12 @@ enum TipoProduto {
 }
 
 enum MotivoCusto {
-  MANUAL         // Alterado manualmente no cadastro
-  NF_ENTRADA     // Lançamento de estoque via NF de entrada
-  FORMACAO_CUSTO // Formação de custo (rateio de frete/despesas)
-  ESTORNO_NF     // Estorno de lançamento de NF
-  BOM            // Recálculo automático por composição (BOM)
+  MANUAL                // Alterado manualmente no cadastro
+  NF_ENTRADA            // Lançamento de estoque via NF de entrada
+  FORMACAO_CUSTO        // Formação de custo (rateio de frete/despesas)
+  ESTORNO_NF            // Estorno de lançamento de NF
+  BOM                   // Recálculo automático por composição (BOM)
+  MOVIMENTACAO_ESTOQUE  // Entrada manual de estoque (movimentação)
 }
 
 enum Aprovisionamento {
@@ -164,6 +165,7 @@ model Produto {
   ingredientesFicha IngredienteFicha[]
   itensPedidoCompra ItemPedidoCompra[]
   itensPedidoVenda  ItemPedidoVenda[]
+  ordensProducao    OrdemProducao[]
   itensNfEntrada    ItemNfEntrada[]
   historicoCustos   ProdutoCusto[]
   fornecedor        Pessoa?  @relation("FornecedorProdutos", fields: [fornecedorId], references: [id])
@@ -238,7 +240,6 @@ model FichaTecnica {
 
   produto        Produto?          @relation(fields: [produtoId], references: [id])
   ingredientes   IngredienteFicha[]
-  ordensProducao OrdemProducao[]
 
   @@map("fichas_tecnicas")
 }
@@ -308,7 +309,7 @@ enum Turno {
 model OrdemProducao {
   id             String      @id @default(uuid())
   numero         String      @unique
-  fichaTecnicaId String
+  produtoId      String
   quantidade          Decimal     @db.Decimal(12, 3)
   quantidadeProduzida Decimal     @default(0) @db.Decimal(12, 3)
   status              StatusOrdem @default(PLANEJADA)
@@ -319,12 +320,12 @@ model OrdemProducao {
   criadoEm      DateTime    @default(now())
   atualizadoEm  DateTime    @updatedAt
 
-  fichaTecnica  FichaTecnica          @relation(fields: [fichaTecnicaId], references: [id])
+  produto       Produto               @relation(fields: [produtoId], references: [id])
   responsavel   Usuario?              @relation(fields: [responsavelId], references: [id])
   apontamentos  ApontamentoProducao[]
 
   @@index([dataProducao, status])
-  @@index([fichaTecnicaId])
+  @@index([produtoId])
   @@map("ordens_producao")
 }
 

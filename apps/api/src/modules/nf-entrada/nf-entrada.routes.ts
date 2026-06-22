@@ -3,6 +3,7 @@ import { prisma } from '@erp/database'
 import { requirePerfil } from '../../plugins/auth.plugin.js'
 import { parseNFe } from './nfe.parser.js'
 import { consultarDistribuicao } from './sefaz-distribuicao.service.js'
+import { propagarCustoComponente } from '../produtos/custo-bom.service.js'
 import { z } from 'zod'
 
 // ── Schemas ───────────────────────────────────────────────────────────────────
@@ -345,9 +346,6 @@ export async function nfEntradaRoutes(app: FastifyInstance) {
     if (!nf) return reply.code(404).send({ error: 'NF não encontrada.' })
     if (nf.estoqueElancado) return reply.code(409).send({ error: 'Estoque já foi lançado para esta NF.' })
 
-    const configMetodo = await prisma.configuracao.findUnique({ where: { chave: 'METODO_CUSTO' } })
-    const metodo = configMetodo?.valor ?? 'MEDIO'
-
     await prisma.$transaction(async (tx) => {
       // 1. Cria produtos marcados como "novo"
       for (const item of nf.itens.filter(i => i.produtoNovo && !i.produtoId)) {
@@ -384,11 +382,12 @@ export async function nfEntradaRoutes(app: FastifyInstance) {
       const produtoIds = itensComProduto.map(i => i.produtoId!)
       const produtos = await tx.produto.findMany({
         where: { id: { in: produtoIds } },
-        select: { id: true, estoqueAtual: true, custoMedio: true, ultimoCusto: true, fatorConversao: true, operacaoConversao: true },
+        select: { id: true, fatorConversao: true, operacaoConversao: true },
       })
       const produtoMap = new Map(produtos.map(p => [p.id, p]))
 
-      // 3. Movimentações de estoque
+      // 3. Movimentações de estoque — lançar estoque atualiza SOMENTE quantidades.
+      //    O custo do produto é definido/atualizado em "Formar Custo".
       for (const item of itensComProduto) {
         const prod = produtoMap.get(item.produtoId!)
         if (!prod) continue
@@ -401,15 +400,9 @@ export async function nfEntradaRoutes(app: FastifyInstance) {
           : (op === 'DIVIDIR') ? qtdeNf / fator
           : qtdeNf
         const valorTotal = Number(item.valorTotal)
-        const novoCusto = +(qtdeEstoque > 0 ? valorTotal / qtdeEstoque : Number(item.valorUnitario)).toFixed(4)
-
-        const estoqueAtual = Number(prod.estoqueAtual)
-        const custoMedioAtual = Number(prod.custoMedio)
-        const novoEstoque = estoqueAtual + qtdeEstoque
-        const novoCustoMedio = novoEstoque > 0
-          ? (estoqueAtual * custoMedioAtual + qtdeEstoque * novoCusto) / novoEstoque
-          : novoCusto
-        const custoAtivo = metodo === 'ULTIMO' ? novoCusto : novoCustoMedio
+        // Custo da nota gravado na movimentação (rastreabilidade e base do estorno),
+        // sem alterar o custo do produto.
+        const custoNf = +(qtdeEstoque > 0 ? valorTotal / qtdeEstoque : Number(item.valorUnitario)).toFixed(4)
 
         await tx.movimentacaoEstoque.create({
           data: {
@@ -417,19 +410,14 @@ export async function nfEntradaRoutes(app: FastifyInstance) {
             nfEntradaId: id,
             tipo: 'ENTRADA',
             quantidade: +qtdeEstoque.toFixed(4),
-            custoUnitario: novoCusto,
+            custoUnitario: custoNf,
             observacao: `NF ${nf.numero || id} — ${item.descricao}`,
           },
         })
 
         await tx.produto.update({
           where: { id: item.produtoId! },
-          data: {
-            estoqueAtual: { increment: +qtdeEstoque.toFixed(4) },
-            ultimoCusto: novoCusto,
-            custoMedio: +novoCustoMedio.toFixed(4),
-            custoUnitario: +custoAtivo.toFixed(4),
-          },
+          data: { estoqueAtual: { increment: +qtdeEstoque.toFixed(4) } },
         })
       }
 
@@ -573,6 +561,9 @@ export async function nfEntradaRoutes(app: FastifyInstance) {
             observacao:  `Formação de custo NF ${nf.numero || id}`,
           },
         })
+
+        // Propaga o novo custo para produtos com BOM que usam este como componente
+        await propagarCustoComponente(tx, item.produtoId)
       }
       await tx.nfEntrada.update({ where: { id }, data: { custoFormado: true } })
     })
@@ -785,6 +776,9 @@ export async function nfEntradaRoutes(app: FastifyInstance) {
             observacao:  `Estorno NF ${nf.numero || id}`,
           },
         })
+
+        // Propaga a reversão de custo para produtos com BOM que usam este como componente
+        await propagarCustoComponente(tx, item.produtoId)
       }
 
       await tx.nfEntrada.update({

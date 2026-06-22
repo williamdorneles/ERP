@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -7,11 +7,10 @@ import { api } from '../../lib/api'
 import { FormField, Input, Select, Textarea } from '../ui/FormField'
 import { Button } from '../ui/Button'
 import { Form } from '../ui/Form'
-import { useState } from 'react'
-import { AlertTriangle, CheckCircle } from 'lucide-react'
+import { AlertTriangle, CheckCircle, X } from 'lucide-react'
 
 const schema = z.object({
-  fichaTecnicaId: z.string().min(1, 'Selecione a receita'),
+  produtoId: z.string().min(1, 'Selecione o produto'),
   quantidade: z.coerce.number().positive('Deve ser maior que 0'),
   turno: z.enum(['MANHA', 'TARDE', 'NOITE']),
   dataProducao: z.string().min(1, 'Obrigatório'),
@@ -20,12 +19,17 @@ const schema = z.object({
 
 type FormData = z.infer<typeof schema>
 
-interface FichaTecnica {
+interface Produto {
   id: string
+  nome: string
   codigo: string
-  produto: { nome: string }
-  rendimento: number
-  unidadeRendimento: string
+  unidadeMedida: string
+}
+
+interface BomInfo {
+  id: string
+  qtdeProduzida: number
+  unidadeProduzida: string
 }
 
 interface ItemExplosao {
@@ -39,13 +43,13 @@ interface ItemExplosao {
 export interface OrdemProducaoData {
   id: string
   numero: string
-  fichaTecnicaId: string
+  produtoId: string
   quantidade: number
   turno: string
   dataProducao: string
   observacao?: string
   status: string
-  fichaTecnica: { codigo: string; produto: { nome: string } }
+  produto: { nome: string }
 }
 
 interface OrdemProducaoFormProps {
@@ -54,18 +58,109 @@ interface OrdemProducaoFormProps {
   onCancel: () => void
 }
 
+// ── Busca de produto por nome ──────────────────────────────────────────────────
+
+function ProdutoInput({
+  value,
+  onChange,
+  error,
+}: {
+  value: string
+  onChange: (id: string, nome: string) => void
+  error?: boolean
+}) {
+  const [busca, setBusca] = useState('')
+  const [aberto, setAberto] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  const { data: produtos = [] } = useQuery<Produto[]>({
+    queryKey: ['produtos-select', busca],
+    queryFn: () => api.get('/produtos', { params: { busca: busca || undefined, mostrarInativos: 'false' } }).then(r => r.data),
+  })
+
+  // Carrega o nome do produto selecionado ao editar
+  const { data: produtoSelecionado } = useQuery<Produto>({
+    queryKey: ['produto-item', value],
+    queryFn: () => api.get(`/produtos/${value}`).then(r => r.data),
+    enabled: !!value && !busca,
+  })
+
+  useEffect(() => {
+    if (produtoSelecionado && !busca) setBusca(produtoSelecionado.nome)
+  }, [produtoSelecionado]) // eslint-disable-line
+
+  useEffect(() => {
+    function handler(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setAberto(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
+  function selecionar(p: Produto) {
+    onChange(p.id, p.nome)
+    setBusca(p.nome)
+    setAberto(false)
+  }
+
+  function limpar() {
+    onChange('', '')
+    setBusca('')
+    setAberto(false)
+  }
+
+  return (
+    <div ref={ref} className="relative">
+      <div className="relative">
+        <input
+          type="text"
+          value={busca}
+          onChange={e => { setBusca(e.target.value); setAberto(true); if (!e.target.value) onChange('', '') }}
+          onFocus={() => setAberto(true)}
+          placeholder="Digite o nome do produto..."
+          className={`w-full px-3 py-2 pr-8 border rounded-lg text-sm focus:outline-none focus:ring-2 transition ${
+            error ? 'border-red-300 focus:ring-red-400' : 'border-gray-300 focus:ring-primary-500 focus:border-transparent'
+          }`}
+        />
+        {value && (
+          <button type="button" onClick={limpar} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
+            <X size={14} />
+          </button>
+        )}
+      </div>
+      {aberto && produtos.length > 0 && (
+        <ul className="absolute z-20 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-52 overflow-y-auto">
+          {produtos.map(p => (
+            <li
+              key={p.id}
+              onMouseDown={() => selecionar(p)}
+              className="px-3 py-2 cursor-pointer hover:bg-primary-50 text-sm"
+            >
+              <span className="font-medium text-gray-900">{p.nome}</span>
+              <span className="ml-2 text-xs text-gray-400">{p.codigo}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {aberto && busca.trim() !== '' && produtos.length === 0 && (
+        <div className="absolute z-20 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg px-3 py-2 text-sm text-gray-400">
+          Nenhum produto encontrado
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Form principal ─────────────────────────────────────────────────────────────
+
 export function OrdemProducaoForm({ initialData, onSuccess, onCancel }: OrdemProducaoFormProps) {
   const queryClient = useQueryClient()
   const isEditing = !!initialData
   const [explosao, setExplosao] = useState<ItemExplosao[] | null>(null)
   const [loadingExplosao, setLoadingExplosao] = useState(false)
+  const [bomInfo, setBomInfo] = useState<BomInfo | null | false>(null)
 
-  const { data: fichas = [] } = useQuery<FichaTecnica[]>({
-    queryKey: ['fichas-select'],
-    queryFn: () => api.get('/producao/fichas').then(r => r.data),
-  })
-
-  const { register, handleSubmit, watch, reset, formState: { errors } } = useForm<FormData>({
+  const { register, handleSubmit, watch, setValue, reset, formState: { errors } } = useForm<FormData>({
     resolver: zodResolver(schema),
     defaultValues: {
       dataProducao: new Date().toISOString().split('T')[0],
@@ -76,7 +171,7 @@ export function OrdemProducaoForm({ initialData, onSuccess, onCancel }: OrdemPro
   useEffect(() => {
     if (initialData) {
       reset({
-        fichaTecnicaId: initialData.fichaTecnicaId,
+        produtoId: initialData.produtoId,
         quantidade: Number(initialData.quantidade),
         turno: initialData.turno as FormData['turno'],
         dataProducao: new Date(initialData.dataProducao).toISOString().split('T')[0],
@@ -85,17 +180,22 @@ export function OrdemProducaoForm({ initialData, onSuccess, onCancel }: OrdemPro
     }
   }, [initialData, reset])
 
-  const fichaTecnicaId = watch('fichaTecnicaId')
+  const produtoId = watch('produtoId')
   const quantidade = watch('quantidade')
-  const fichaSelecionada = fichas.find(f => f.id === fichaTecnicaId)
+
+  // Busca BOM do produto selecionado para mostrar hint de lote base
+  useEffect(() => {
+    if (!produtoId) { setBomInfo(null); return }
+    api.get(`/producao/bom/${produtoId}`)
+      .then(r => setBomInfo(r.data))
+      .catch(() => setBomInfo(false))
+  }, [produtoId])
 
   async function verificarExplosao() {
-    if (!fichaTecnicaId || !quantidade) return
+    if (!produtoId || !quantidade) return
     setLoadingExplosao(true)
     try {
-      const res = await api.get(`/producao/fichas/${fichaTecnicaId}/explosao`, {
-        params: { quantidade },
-      })
+      const res = await api.get(`/producao/bom/${produtoId}/explosao`, { params: { quantidade } })
       setExplosao(res.data.explosao)
     } finally {
       setLoadingExplosao(false)
@@ -125,20 +225,28 @@ export function OrdemProducaoForm({ initialData, onSuccess, onCancel }: OrdemPro
         />
       </FormField>
 
-      <FormField label="Receita / Ficha Técnica" error={errors.fichaTecnicaId?.message} required>
-        <Select {...register('fichaTecnicaId')} error={!!errors.fichaTecnicaId}>
-          <option value="">Selecione a receita...</option>
-          {fichas.map(f => (
-            <option key={f.id} value={f.id}>
-              {f.codigo} — {f.produto.nome} (Rend.: {Number(f.rendimento).toFixed(2)} {f.unidadeRendimento})
-            </option>
-          ))}
-        </Select>
+      <FormField label="Produto" error={errors.produtoId?.message} required>
+        <ProdutoInput
+          value={produtoId ?? ''}
+          onChange={(id) => {
+            setValue('produtoId', id, { shouldValidate: true })
+            setExplosao(null)
+            setBomInfo(null)
+          }}
+          error={!!errors.produtoId}
+        />
+        {produtoId && bomInfo === false && (
+          <p className="text-xs text-amber-600 mt-1">⚠ Este produto não possui composição BOM — a ordem não poderá ser criada.</p>
+        )}
       </FormField>
 
       <div className="grid grid-cols-2 gap-4">
-        <FormField label="Quantidade a Produzir" error={errors.quantidade?.message} required
-          hint={fichaSelecionada ? `Rendimento base: ${Number(fichaSelecionada.rendimento).toFixed(2)} ${fichaSelecionada.unidadeRendimento}` : undefined}>
+        <FormField
+          label="Quantidade a Produzir"
+          error={errors.quantidade?.message}
+          required
+          hint={bomInfo ? `Lote BOM: ${Number(bomInfo.qtdeProduzida).toFixed(3)} ${bomInfo.unidadeProduzida}` : undefined}
+        >
           <Input
             {...register('quantidade')}
             type="number"
@@ -162,7 +270,7 @@ export function OrdemProducaoForm({ initialData, onSuccess, onCancel }: OrdemPro
         <Input {...register('dataProducao')} type="date" error={!!errors.dataProducao} />
       </FormField>
 
-      {fichaTecnicaId && quantidade > 0 && (
+      {bomInfo && quantidade > 0 && (
         <div>
           <button
             type="button"
@@ -215,13 +323,13 @@ export function OrdemProducaoForm({ initialData, onSuccess, onCancel }: OrdemPro
 
       {mutation.isError && (
         <p className="text-sm text-red-600 bg-red-50 border border-red-200 px-3 py-2 rounded-lg">
-          Erro ao salvar ordem de produção. Tente novamente.
+          {(mutation.error as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Erro ao salvar ordem de produção.'}
         </p>
       )}
 
       <div className="flex justify-end gap-3 pt-2 border-t border-gray-100">
         <Button type="button" variant="secondary" onClick={onCancel}>Cancelar</Button>
-        <Button type="submit" loading={mutation.isPending}>
+        <Button type="submit" loading={mutation.isPending} disabled={!!produtoId && bomInfo === false}>
           {isEditing ? 'Salvar Alterações' : 'Criar Ordem'}
         </Button>
       </div>

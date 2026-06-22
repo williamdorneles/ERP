@@ -1,16 +1,16 @@
 import { useState, useEffect, Fragment } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Plus, SlidersHorizontal, TrendingUp, TrendingDown } from 'lucide-react'
+import { ArrowLeft, Plus, SlidersHorizontal, TrendingUp, TrendingDown, Pencil, Trash2, ArrowLeftRight } from 'lucide-react'
 import { api } from '../../lib/api'
-import { FormField, Input, Select } from '../../components/ui/FormField'
+import { FormField, Input, Select, CurrencyInput } from '../../components/ui/FormField'
 import { Button } from '../../components/ui/Button'
 import { Form } from '../../components/ui/Form'
 import clsx from 'clsx'
 
 interface ContaFinanceira { id: string; codigo: string; nome: string }
 interface Lancamento {
-  id: string; data: string; descricao: string | null; nomeOriginal: string | null
+  id: string; fitid: string; data: string; descricao: string | null; nomeOriginal: string | null
   tipo: 'DEBITO' | 'CREDITO'; valor: number; status: string
   fonteClassificacao: string | null
   contaFinanceira: { id: string; codigo: string; nome: string } | null
@@ -43,7 +43,7 @@ function ModalLancamento({
   onSuccess: () => void
 }) {
   const [tipo, setTipo] = useState<'DEBITO' | 'CREDITO'>('DEBITO')
-  const [valor, setValor] = useState('')
+  const [valor, setValor] = useState<number>(0)
   const [data, setData] = useState(new Date().toISOString().slice(0, 10))
   const [descricao, setDescricao] = useState('')
   const [contaFinanceiraId, setContaFinanceiraId] = useState('')
@@ -51,7 +51,7 @@ function ModalLancamento({
 
   const mutation = useMutation({
     mutationFn: () => api.post(`/financeiro/contas-bancarias/${contaBancariaId}/lancamento`, {
-      tipo, valor: Number(valor), data, descricao, contaFinanceiraId: contaFinanceiraId || undefined,
+      tipo, valor, data, descricao, contaFinanceiraId: contaFinanceiraId || undefined,
     }),
     onSuccess,
     onError: () => setErro('Erro ao salvar lançamento. Verifique os dados.'),
@@ -60,7 +60,7 @@ function ModalLancamento({
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setErro('')
-    if (!valor || Number(valor) <= 0) { setErro('Valor deve ser maior que zero.'); return }
+    if (!valor || valor <= 0) { setErro('Valor deve ser maior que zero.'); return }
     if (!descricao.trim()) { setErro('Descrição obrigatória.'); return }
     mutation.mutate()
   }
@@ -91,8 +91,8 @@ function ModalLancamento({
           </div>
 
           <div className="grid grid-cols-2 gap-3">
-            <FormField label="Valor (R$)" required>
-              <Input type="number" step="0.01" min="0.01" value={valor} onChange={e => setValor(e.target.value)} placeholder="0,00" />
+            <FormField label="Valor" required>
+              <CurrencyInput value={valor} onChange={setValor} />
             </FormField>
             <FormField label="Data" required>
               <Input type="date" value={data} onChange={e => setData(e.target.value)} />
@@ -124,29 +124,197 @@ function ModalLancamento({
   )
 }
 
+// ─── Modal Editar Lançamento Manual ──────────────────────────────────────────
+
+function ModalEditarLancamento({
+  lancamento,
+  contasFinanceiras,
+  onClose,
+  onSuccess,
+}: {
+  lancamento: Lancamento
+  contasFinanceiras: ContaFinanceira[]
+  onClose: () => void
+  onSuccess: () => void
+}) {
+  const [tipo, setTipo] = useState<'DEBITO' | 'CREDITO'>(lancamento.tipo)
+  const [valor, setValor] = useState(Number(lancamento.valor))
+  const [data, setData] = useState(lancamento.data.slice(0, 10))
+  const [descricao, setDescricao] = useState(lancamento.descricao ?? '')
+  const [contaFinanceiraId, setContaFinanceiraId] = useState(lancamento.contaFinanceira?.id ?? '')
+  const [erro, setErro] = useState('')
+
+  const mutation = useMutation({
+    mutationFn: () => api.put(`/financeiro/transacoes/${lancamento.id}`, {
+      tipo, valor, data, descricao, contaFinanceiraId: contaFinanceiraId || undefined,
+    }),
+    onSuccess,
+    onError: () => setErro('Erro ao salvar. Verifique os dados.'),
+  })
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-4">
+        <h3 className="text-lg font-semibold text-gray-900">Editar Lançamento Manual</h3>
+
+        <Form onSubmit={e => { e.preventDefault(); setErro(''); mutation.mutate() }} className="space-y-4">
+          <div className="flex gap-2">
+            {(['DEBITO', 'CREDITO'] as const).map(t => (
+              <button
+                key={t} type="button"
+                onClick={() => setTipo(t)}
+                className={clsx(
+                  'flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium border transition',
+                  tipo === t
+                    ? t === 'DEBITO' ? 'bg-red-50 border-red-400 text-red-700' : 'bg-green-50 border-green-400 text-green-700'
+                    : 'bg-white border-gray-300 text-gray-600 hover:border-gray-400',
+                )}
+              >
+                {t === 'DEBITO' ? <TrendingDown size={15} /> : <TrendingUp size={15} />}
+                {t === 'DEBITO' ? 'Saída (Débito)' : 'Entrada (Crédito)'}
+              </button>
+            ))}
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <FormField label="Valor" required>
+              <CurrencyInput value={valor} onChange={setValor} />
+            </FormField>
+            <FormField label="Data" required>
+              <Input type="date" value={data} onChange={e => setData(e.target.value)} />
+            </FormField>
+          </div>
+
+          <FormField label="Descrição" required>
+            <Input value={descricao} onChange={e => setDescricao(e.target.value)} />
+          </FormField>
+
+          <FormField label="Conta do Plano (opcional)">
+            <Select value={contaFinanceiraId} onChange={e => setContaFinanceiraId(e.target.value)}>
+              <option value="">Sem classificação</option>
+              {contasFinanceiras.map(c => (
+                <option key={c.id} value={c.id}>{c.codigo} — {c.nome}</option>
+              ))}
+            </Select>
+          </FormField>
+
+          {erro && <p className="text-sm text-red-600">{erro}</p>}
+
+          <div className="flex gap-3 pt-2">
+            <Button type="button" variant="secondary" className="flex-1" onClick={onClose}>Cancelar</Button>
+            <Button type="submit" className="flex-1" loading={mutation.isPending}>Salvar</Button>
+          </div>
+        </Form>
+      </div>
+    </div>
+  )
+}
+
+// ─── Modal Transferência ──────────────────────────────────────────────────────
+
+function ModalTransferencia({
+  contaAtualId,
+  contas,
+  onClose,
+  onSuccess,
+}: {
+  contaAtualId: string
+  contas: ContaBancariaSimples[]
+  onClose: () => void
+  onSuccess: () => void
+}) {
+  const [contaOrigemId, setContaOrigemId] = useState(contaAtualId)
+  const [contaDestinoId, setContaDestinoId] = useState('')
+  const [valor, setValor] = useState<number>(0)
+  const [data, setData] = useState(new Date().toISOString().slice(0, 10))
+  const [descricao, setDescricao] = useState('Transferência')
+  const [erro, setErro] = useState('')
+
+  const ativas = contas.filter(c => c.ativo)
+
+  const mutation = useMutation({
+    mutationFn: () => api.post('/financeiro/transferencias', { contaOrigemId, contaDestinoId, valor, data, descricao }),
+    onSuccess,
+    onError: (e: { response?: { data?: { error?: string } } }) => setErro(e.response?.data?.error ?? 'Erro ao transferir.'),
+  })
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-4">
+        <h3 className="text-lg font-semibold text-gray-900">Transferência entre Contas</h3>
+
+        <Form onSubmit={e => { e.preventDefault(); setErro(''); mutation.mutate() }} className="space-y-4">
+          <FormField label="Conta de origem" required>
+            <Select value={contaOrigemId} onChange={e => setContaOrigemId(e.target.value)}>
+              {ativas.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}
+            </Select>
+          </FormField>
+
+          <FormField label="Conta de destino" required>
+            <Select value={contaDestinoId} onChange={e => setContaDestinoId(e.target.value)}>
+              <option value="">Selecione...</option>
+              {ativas.filter(c => c.id !== contaOrigemId).map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}
+            </Select>
+          </FormField>
+
+          <div className="grid grid-cols-2 gap-3">
+            <FormField label="Valor" required>
+              <CurrencyInput value={valor} onChange={setValor} />
+            </FormField>
+            <FormField label="Data" required>
+              <Input type="date" value={data} onChange={e => setData(e.target.value)} />
+            </FormField>
+          </div>
+
+          <FormField label="Descrição">
+            <Input value={descricao} onChange={e => setDescricao(e.target.value)} />
+          </FormField>
+
+          {erro && <p className="text-sm text-red-600">{erro}</p>}
+
+          <div className="flex gap-3 pt-2">
+            <Button type="button" variant="secondary" className="flex-1" onClick={onClose}>Cancelar</Button>
+            <Button type="submit" className="flex-1" loading={mutation.isPending} disabled={!contaDestinoId || !valor}>
+              Transferir
+            </Button>
+          </div>
+        </Form>
+      </div>
+    </div>
+  )
+}
+
 // ─── Modal Ajuste de Saldo ────────────────────────────────────────────────────
 
 function ModalAjuste({
   contaBancariaId,
-  saldoAtual,
   onClose,
   onSuccess,
 }: {
   contaBancariaId: string
-  saldoAtual: number
   onClose: () => void
   onSuccess: () => void
 }) {
-  const [saldoDesejado, setSaldoDesejado] = useState(String(saldoAtual.toFixed(2)))
+  const [saldoDesejado, setSaldoDesejado] = useState<number>(0)
   const [data, setData] = useState(new Date().toISOString().slice(0, 10))
   const [descricao, setDescricao] = useState('Ajuste de saldo')
   const [erro, setErro] = useState('')
 
-  const diferenca = Number(saldoDesejado) - saldoAtual
+  // Busca o saldo na data selecionada (não o saldo atual total)
+  const { data: saldoData } = useQuery<{ saldo: number }>({
+    queryKey: ['saldo-na-data', contaBancariaId, data],
+    queryFn: () => api.get(`/financeiro/contas-bancarias/${contaBancariaId}/saldo?ate=${data}`).then(r => r.data),
+    enabled: !!contaBancariaId && !!data,
+  })
+  const saldoNaData = saldoData?.saldo ?? 0
+
+  const diferenca = saldoDesejado - saldoNaData
 
   const mutation = useMutation({
     mutationFn: () => api.post(`/financeiro/contas-bancarias/${contaBancariaId}/ajuste-saldo`, {
-      saldoDesejado: Number(saldoDesejado), data, descricao,
+      saldoDesejado, data, descricao,
     }),
     onSuccess,
     onError: (err: { response?: { data?: { error?: string } } }) => setErro(err.response?.data?.error ?? 'Erro ao ajustar saldo.'),
@@ -157,22 +325,25 @@ function ModalAjuste({
       <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
       <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 space-y-4">
         <h3 className="text-lg font-semibold text-gray-900">Ajuste de Saldo</h3>
-        <p className="text-sm text-gray-500">Saldo atual: <strong>{fmt(saldoAtual)}</strong></p>
 
         <Form onSubmit={e => { e.preventDefault(); setErro(''); mutation.mutate() }} className="space-y-4">
-          <FormField label="Saldo correto (R$)" required>
-            <Input type="number" step="0.01" value={saldoDesejado} onChange={e => setSaldoDesejado(e.target.value)} />
-          </FormField>
-
-          {saldoDesejado && !isNaN(Number(saldoDesejado)) && Math.abs(diferenca) >= 0.01 && (
-            <div className={clsx('px-3 py-2 rounded-lg text-sm', diferenca > 0 ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700')}>
-              {diferenca > 0 ? 'Entrada' : 'Saída'} de <strong>{fmt(Math.abs(diferenca))}</strong> será lançada automaticamente.
-            </div>
-          )}
-
           <FormField label="Data do ajuste">
             <Input type="date" value={data} onChange={e => setData(e.target.value)} />
           </FormField>
+
+          <p className="text-sm text-gray-500">
+            Saldo em {new Date(data + 'T00:00:00').toLocaleDateString('pt-BR')}: <strong>{fmt(saldoNaData)}</strong>
+          </p>
+
+          <FormField label="Saldo correto" required>
+            <CurrencyInput value={saldoDesejado} onChange={setSaldoDesejado} />
+          </FormField>
+
+          {Math.abs(diferenca) >= 0.01 && (
+            <div className="px-3 py-2 rounded-lg text-sm bg-amber-50 text-amber-700 border border-amber-200">
+              O saldo será ajustado de <strong>{fmt(saldoNaData)}</strong> para <strong>{fmt(saldoDesejado)}</strong>. Um ponto de referência será registrado no extrato — não é um lançamento de receita ou despesa.
+            </div>
+          )}
 
           <FormField label="Observação">
             <Input value={descricao} onChange={e => setDescricao(e.target.value)} />
@@ -213,12 +384,31 @@ export function ExtratoPage() {
   const [pagina, setPagina] = useState(1)
   const [showLancamento, setShowLancamento] = useState(false)
   const [showAjuste, setShowAjuste] = useState(false)
+  const [showTransferencia, setShowTransferencia] = useState(false)
+  const [excluindoTransf, setExcluindoTransf] = useState<string | null>(null)
 
-  // Carrega lista de contas apenas no modo Caixa
+  const deleteTransfMutation = useMutation({
+    mutationFn: (transferId: string) => api.delete(`/financeiro/transferencias/${transferId}`),
+    onSuccess: () => { invalidate(); setExcluindoTransf(null) },
+  })
+  const [editando, setEditando] = useState<Lancamento | null>(null)
+  const [excluindo, setExcluindo] = useState<string | null>(null)
+  const [classificando, setClassificando] = useState<string | null>(null)
+
+  const deleteMutation = useMutation({
+    mutationFn: (txId: string) => api.delete(`/financeiro/transacoes/${txId}`),
+    onSuccess: () => { invalidate(); setExcluindo(null) },
+  })
+
+  const classificarMutation = useMutation({
+    mutationFn: ({ txId, contaFinanceiraId }: { txId: string; contaFinanceiraId: string }) =>
+      api.put(`/financeiro/transacoes/${txId}/classificar`, { contaFinanceiraId: contaFinanceiraId || null, aplicarSimilares: false }),
+    onSuccess: () => { invalidate(); setClassificando(null) },
+  })
+
   const { data: todasContas = [] } = useQuery<ContaBancariaSimples[]>({
     queryKey: ['contas-bancarias'],
     queryFn: () => api.get('/financeiro/contas-bancarias').then(r => r.data),
-    enabled: modoCaixa,
   })
 
   // Seleciona automaticamente a primeira conta (caixas têm prioridade)
@@ -282,6 +472,9 @@ export function ExtratoPage() {
           <Button variant="secondary" size="sm" onClick={() => setShowAjuste(true)} disabled={!id}>
             <SlidersHorizontal size={14} /> Ajustar Saldo
           </Button>
+          <Button variant="secondary" size="sm" onClick={() => setShowTransferencia(true)} disabled={!id}>
+            <ArrowLeftRight size={14} /> Transferência
+          </Button>
           <Button size="sm" onClick={() => setShowLancamento(true)} disabled={!id}>
             <Plus size={14} /> Lançamento
           </Button>
@@ -326,9 +519,9 @@ export function ExtratoPage() {
             <tr className="border-b border-gray-100 text-xs text-gray-400 font-medium">
               <th className="text-left px-4 py-3">Data</th>
               <th className="text-left px-4 py-3">Descrição</th>
-              <th className="text-left px-4 py-3 hidden md:table-cell">Conta</th>
               <th className="text-right px-4 py-3">Valor</th>
               <th className="text-right px-4 py-3">Saldo</th>
+              <th className="px-4 py-3">Ações</th>
             </tr>
           </thead>
           {/* Saldo do dia anterior à data inicial */}
@@ -341,13 +534,13 @@ export function ExtratoPage() {
                 <td className="px-4 py-2 text-xs text-blue-400">
                   até {fmtDate(new Date(new Date(dataInicio + 'T12:00:00').getTime() - 86400000).toISOString().slice(0, 10))}
                 </td>
-                <td className="hidden md:table-cell" />
                 <td />
                 <td className="px-4 py-2 text-right whitespace-nowrap">
                   <span className={clsx('text-sm font-bold', data.conta.saldoAntes >= 0 ? 'text-blue-700' : 'text-red-700')}>
                     {fmt(data.conta.saldoAntes)}
                   </span>
                 </td>
+                <td />
               </tr>
             </tbody>
           )}
@@ -357,56 +550,168 @@ export function ExtratoPage() {
               <tr><td colSpan={5} className="text-center py-12 text-gray-400">Carregando...</td></tr>
             ) : lancamentosComSaldo.length === 0 ? (
               <tr><td colSpan={5} className="text-center py-12 text-gray-400">Nenhum lançamento no período</td></tr>
-            ) : Array.from(porDia.entries()).map(([dia, lancsDia]) => {
+            ) : Array.from(porDia.entries()).reverse().map(([dia, lancsDia]) => {
               const saldoDia = lancsDia[0].saldo
-              const entradas = lancsDia.filter(l => l.tipo === 'CREDITO').reduce((s, l) => s + Number(l.valor), 0)
-              const saidas   = lancsDia.filter(l => l.tipo === 'DEBITO').reduce((s, l) => s + Number(l.valor), 0)
+              // AJUSTE não é movimentação real — excluir do resumo de entradas/saídas
+              const movimentos = lancsDia.filter(l => l.fonteClassificacao !== 'AJUSTE')
+              const entradas = movimentos.filter(l => l.tipo === 'CREDITO').reduce((s, l) => s + Number(l.valor), 0)
+              const saidas   = movimentos.filter(l => l.tipo === 'DEBITO').reduce((s, l) => s + Number(l.valor), 0)
               const liquido  = entradas - saidas
               return (
                 <Fragment key={dia}>
-                  {lancsDia.map(l => (
-                    <tr key={l.id} className="hover:bg-gray-50 transition">
-                      <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{fmtDate(l.data)}</td>
-                      <td className="px-4 py-3">
-                        <p className="text-gray-900">{l.descricao || l.nomeOriginal || '—'}</p>
-                        {l.fonteClassificacao === 'MANUAL' && (
-                          <span className="text-xs text-gray-400">Manual</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-gray-400 text-xs hidden md:table-cell">
-                        {l.contaFinanceira ? `${l.contaFinanceira.codigo} — ${l.contaFinanceira.nome}` : '—'}
-                      </td>
-                      <td className="px-4 py-3 text-right font-medium whitespace-nowrap">
-                        <span className={l.tipo === 'CREDITO' ? 'text-green-600' : 'text-red-600'}>
-                          {l.tipo === 'CREDITO' ? '+' : '-'} {fmt(Number(l.valor))}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-right whitespace-nowrap">
-                        <span className={clsx('font-semibold', l.saldo >= 0 ? 'text-gray-800' : 'text-red-700')}>{fmt(l.saldo)}</span>
-                      </td>
-                    </tr>
+                  {[...lancsDia].reverse().map(l => (
+                    <Fragment key={l.id}>
+                    {l.fonteClassificacao === 'TRANSFERENCIA' ? (
+                      <tr className="bg-indigo-50 border-y border-indigo-100">
+                        <td className="px-4 py-2 text-xs text-indigo-600 whitespace-nowrap font-semibold">{fmtDate(l.data)}</td>
+                        <td className="px-4 py-2 text-xs text-indigo-700">
+                          <div className="flex items-center gap-1.5">
+                            <ArrowLeftRight size={12} className="shrink-0" />
+                            {l.descricao || 'Transferência'}
+                          </div>
+                        </td>
+                        <td className="px-4 py-2 text-right whitespace-nowrap">
+                          <span className={l.tipo === 'CREDITO' ? 'text-green-600 text-xs font-medium' : 'text-red-500 text-xs font-medium'}>
+                            {l.tipo === 'CREDITO' ? '+' : '-'} {fmt(Number(l.valor))}
+                          </span>
+                        </td>
+                        <td className="px-4 py-2 text-right whitespace-nowrap">
+                          <span className={clsx('text-sm font-bold', l.saldo >= 0 ? 'text-indigo-700' : 'text-red-700')}>{fmt(l.saldo)}</span>
+                        </td>
+                        <td className="px-4 py-2 whitespace-nowrap">
+                          <button
+                            onClick={() => setExcluindoTransf(l.fitid.split('-').slice(1, -1).join('-'))}
+                            className="p-1 rounded hover:bg-red-100 text-red-400 transition"
+                            title="Excluir transferência"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </td>
+                      </tr>
+                    ) : l.fonteClassificacao === 'AJUSTE' ? (
+                      <tr className="bg-amber-50 border-y border-amber-100">
+                        <td className="px-4 py-2 text-xs text-amber-600 whitespace-nowrap font-semibold">
+                          {fmtDate(l.data)}
+                        </td>
+                        <td className="px-4 py-2 text-xs text-amber-700">
+                          {l.descricao || 'Ajuste de saldo'}
+                        </td>
+                        <td />
+                        <td className="px-4 py-2 text-right whitespace-nowrap">
+                          <span className={clsx('text-sm font-bold', l.saldo >= 0 ? 'text-amber-700' : 'text-red-700')}>
+                            {fmt(l.saldo)}
+                          </span>
+                        </td>
+                        <td className="px-4 py-2 whitespace-nowrap">
+                          <div className="flex items-center gap-1">
+                            <button
+                              onClick={() => setEditando(l)}
+                              className="p-1 rounded hover:bg-amber-200 text-amber-500 transition"
+                              title="Editar"
+                            >
+                              <Pencil size={14} />
+                            </button>
+                            <button
+                              onClick={() => setExcluindo(l.id)}
+                              className="p-1 rounded hover:bg-red-100 text-red-400 transition"
+                              title="Excluir"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : (
+                      <tr key={l.id} className="hover:bg-gray-50 transition">
+                        <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{fmtDate(l.data)}</td>
+                        <td className="px-4 py-3">
+                          <span className="text-gray-900">{l.descricao || l.nomeOriginal || '—'}</span>
+                          {l.fonteClassificacao === 'MANUAL' && (
+                            <span className="ml-2 text-xs text-gray-400">Manual</span>
+                          )}
+                          {l.fonteClassificacao !== 'MANUAL' && l.fonteClassificacao !== 'AJUSTE' && (
+                            <div className="mt-0.5">
+                              {classificando === l.id ? (
+                                <select
+                                  autoFocus
+                                  defaultValue={l.contaFinanceira?.id ?? ''}
+                                  onBlur={() => setClassificando(null)}
+                                  onChange={e => classificarMutation.mutate({ txId: l.id, contaFinanceiraId: e.target.value })}
+                                  className="text-xs border border-blue-300 rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-blue-400 bg-white"
+                                >
+                                  <option value="">Sem classificação</option>
+                                  {contasFinanceiras.map(c => (
+                                    <option key={c.id} value={c.id}>{c.codigo} — {c.nome}</option>
+                                  ))}
+                                </select>
+                              ) : (
+                                <button
+                                  onClick={() => setClassificando(l.id)}
+                                  className="text-xs text-gray-400 hover:text-blue-500 hover:underline transition"
+                                >
+                                  {l.contaFinanceira ? `${l.contaFinanceira.codigo} — ${l.contaFinanceira.nome}` : 'Sem classificação'}
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-right font-medium whitespace-nowrap">
+                          <span className={l.tipo === 'CREDITO' ? 'text-green-600' : 'text-red-600'}>
+                            {l.tipo === 'CREDITO' ? '+' : '-'} {fmt(Number(l.valor))}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-right whitespace-nowrap">
+                          <span className={clsx('font-semibold', l.saldo >= 0 ? 'text-gray-800' : 'text-red-700')}>{fmt(l.saldo)}</span>
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          {l.fonteClassificacao === 'MANUAL' && (
+                            <div className="flex items-center gap-1">
+                              <button
+                                onClick={() => setEditando(l)}
+                                className="p-1 rounded hover:bg-blue-100 text-blue-400 transition"
+                                title="Editar"
+                              >
+                                <Pencil size={14} />
+                              </button>
+                              <button
+                                onClick={() => setExcluindo(l.id)}
+                                className="p-1 rounded hover:bg-red-100 text-red-400 transition"
+                                title="Excluir"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
                   ))}
                   {/* Linha de saldo do dia */}
                   <tr className="bg-gray-50 border-t-2 border-gray-200">
                     <td className="px-4 py-2 text-xs font-semibold text-gray-500 whitespace-nowrap">
-                      Saldo do dia
+                      Saldo do dia <span className="font-normal text-gray-400">{new Date(dia + 'T00:00:00').toLocaleDateString('pt-BR')}</span>
                     </td>
                     <td className="px-4 py-2 text-xs text-gray-400 whitespace-nowrap">
-                      {lancsDia.length} lançamento{lancsDia.length !== 1 ? 's' : ''}
-                      {entradas > 0 && <span className="ml-2 text-green-600">+{fmt(entradas)}</span>}
-                      {saidas > 0 && <span className="ml-1 text-red-500">-{fmt(saidas)}</span>}
-                      {' · '}
-                      <span className={clsx('font-medium', liquido >= 0 ? 'text-green-600' : 'text-red-600')}>
-                        {liquido >= 0 ? '+' : ''}{fmt(liquido)}
-                      </span>
+                      {movimentos.length > 0 && (
+                        <>
+                          {movimentos.length} lançamento{movimentos.length !== 1 ? 's' : ''}
+                          {entradas > 0 && <span className="ml-2 text-green-600">+{fmt(entradas)}</span>}
+                          {saidas > 0 && <span className="ml-1 text-red-500">-{fmt(saidas)}</span>}
+                          {' · '}
+                          <span className={clsx('font-medium', liquido >= 0 ? 'text-green-600' : 'text-red-600')}>
+                            {liquido >= 0 ? '+' : ''}{fmt(liquido)}
+                          </span>
+                        </>
+                      )}
                     </td>
-                    <td className="hidden md:table-cell" />
                     <td />
                     <td className="px-4 py-2 text-right whitespace-nowrap">
                       <span className={clsx('text-sm font-bold', saldoDia >= 0 ? 'text-gray-800' : 'text-red-700')}>
                         {fmt(saldoDia)}
                       </span>
                     </td>
+                    <td />
                   </tr>
                 </Fragment>
               )
@@ -439,9 +744,58 @@ export function ExtratoPage() {
       {showAjuste && id && (
         <ModalAjuste
           contaBancariaId={id}
-          saldoAtual={saldoAtual}
           onClose={() => setShowAjuste(false)}
           onSuccess={() => { invalidate(); setShowAjuste(false) }}
+        />
+      )}
+
+      {editando && (
+        <ModalEditarLancamento
+          lancamento={editando}
+          contasFinanceiras={contasFinanceiras}
+          onClose={() => setEditando(null)}
+          onSuccess={() => { invalidate(); setEditando(null) }}
+        />
+      )}
+
+      {excluindo && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setExcluindo(null)} />
+          <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 space-y-4">
+            <h3 className="text-lg font-semibold text-gray-900">Excluir lançamento</h3>
+            <p className="text-sm text-gray-600">Tem certeza que deseja excluir este lançamento? Esta ação não pode ser desfeita.</p>
+            <div className="flex gap-3 pt-2">
+              <Button variant="secondary" className="flex-1" onClick={() => setExcluindo(null)}>Cancelar</Button>
+              <Button className="flex-1 bg-red-600 hover:bg-red-700" loading={deleteMutation.isPending} onClick={() => deleteMutation.mutate(excluindo)}>
+                Excluir
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {excluindoTransf && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setExcluindoTransf(null)} />
+          <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 space-y-4">
+            <h3 className="text-lg font-semibold text-gray-900">Excluir transferência</h3>
+            <p className="text-sm text-gray-600">Isso removerá os lançamentos das duas contas. Esta ação não pode ser desfeita.</p>
+            <div className="flex gap-3 pt-2">
+              <Button variant="secondary" className="flex-1" onClick={() => setExcluindoTransf(null)}>Cancelar</Button>
+              <Button className="flex-1 bg-red-600 hover:bg-red-700" loading={deleteTransfMutation.isPending} onClick={() => deleteTransfMutation.mutate(excluindoTransf)}>
+                Excluir
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showTransferencia && id && (
+        <ModalTransferencia
+          contaAtualId={id}
+          contas={todasContas}
+          onClose={() => setShowTransferencia(false)}
+          onSuccess={() => { invalidate(); setShowTransferencia(false) }}
         />
       )}
     </div>

@@ -1131,8 +1131,10 @@ export function TitulosPage() {
   }, [tipo, filtroStatus, filtroVencidos, vencimentoInicio, vencimentoFim])
 
   const { data: resumo } = useQuery<Resumo>({
-    queryKey: ['titulos-resumo'],
-    queryFn: () => api.get('/titulos/resumo').then(r => r.data),
+    queryKey: ['titulos-resumo', vencimentoInicio, vencimentoFim],
+    queryFn: () => api.get('/titulos/resumo', {
+      params: { vencimentoInicio, vencimentoFim },
+    }).then(r => r.data),
   })
 
   const { data: lista, isLoading } = useQuery<{ dados: Titulo[] }>({

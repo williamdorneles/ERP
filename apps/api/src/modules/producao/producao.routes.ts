@@ -7,11 +7,12 @@ export async function producaoRoutes(app: FastifyInstance) {
 
   // Fichas Técnicas
   app.get('/fichas', async (request) => {
-    const { categoriaId, mostrarInativos } = request.query as { categoriaId?: string; mostrarInativos?: string }
+    const { categoriaId, mostrarInativos, produtoId } = request.query as { categoriaId?: string; mostrarInativos?: string; produtoId?: string }
     return prisma.fichaTecnica.findMany({
       where: {
         ...(mostrarInativos !== 'true' && { ativo: true }),
         ...(categoriaId && { categoriaId }),
+        ...(produtoId && { produtoId }),
       },
       include: {
         categoria: { select: { id: true, nome: true } },
@@ -94,7 +95,7 @@ export async function producaoRoutes(app: FastifyInstance) {
     return prisma.fichaTecnica.update({ where: { id }, data: { ativo: !atual.ativo } })
   })
 
-  // Explosão de receita: calcula a necessidade de MP para N unidades
+  // Explosão de receita: calcula a necessidade de MP para N unidades (via BOM)
   app.get('/fichas/:id/explosao', async (request, reply) => {
     const { id } = request.params as { id: string }
     const { quantidade } = request.query as { quantidade?: string }
@@ -124,6 +125,51 @@ export async function producaoRoutes(app: FastifyInstance) {
     return { ficha: ficha.produto?.nome ?? ficha.codigo, quantidade: qtd, explosao }
   })
 
+  // Explosão via BOM do produto
+  app.get('/bom/:produtoId/explosao', async (request, reply) => {
+    const { produtoId } = request.params as { produtoId: string }
+    const { quantidade } = request.query as { quantidade?: string }
+    const qtd = Number(quantidade ?? 1)
+
+    const bom = await prisma.produtoBom.findUnique({
+      where: { produtoId },
+      include: {
+        produto: { select: { nome: true } },
+        itens: {
+          include: { componente: { select: { nome: true, estoqueAtual: true, unidadeMedida: true } } },
+          orderBy: { ordem: 'asc' },
+        },
+      },
+    })
+
+    if (!bom) return reply.code(404).send({ error: 'BOM não cadastrada para este produto' })
+
+    const fator = qtd / Number(bom.qtdeProduzida)
+    const explosao = bom.itens.map(item => {
+      const necessario = Number(item.quantidade) * fator * (1 + Number(item.percPerda) / 100)
+      return {
+        insumo: item.componente.nome,
+        necessario,
+        unidade: item.unidade,
+        disponivel: Number(item.componente.estoqueAtual),
+        suficiente: Number(item.componente.estoqueAtual) >= necessario,
+      }
+    })
+
+    return { produto: bom.produto.nome, loteBom: Number(bom.qtdeProduzida), quantidade: qtd, explosao }
+  })
+
+  // Info do BOM de um produto
+  app.get('/bom/:produtoId', async (request, reply) => {
+    const { produtoId } = request.params as { produtoId: string }
+    const bom = await prisma.produtoBom.findUnique({
+      where: { produtoId },
+      select: { id: true, qtdeProduzida: true, unidadeProduzida: true },
+    })
+    if (!bom) return reply.code(404).send({ error: 'BOM não cadastrada' })
+    return bom
+  })
+
   // Ordens de Produção
   app.get('/ordens', async (request) => {
     const { status, data } = request.query as { status?: string; data?: string }
@@ -133,7 +179,7 @@ export async function producaoRoutes(app: FastifyInstance) {
         ...(data && { dataProducao: { gte: new Date(data) } }),
       },
       include: {
-        fichaTecnica: { select: { codigo: true, produto: { select: { nome: true } } } },
+        produto: { select: { nome: true } },
         responsavel: { select: { nome: true } },
       },
       orderBy: { dataProducao: 'asc' },
@@ -142,9 +188,12 @@ export async function producaoRoutes(app: FastifyInstance) {
 
   app.post('/ordens', async (request, reply) => {
     const data = request.body as {
-      fichaTecnicaId: string; quantidade: number; turno: string
+      produtoId: string; quantidade: number; turno: string
       dataProducao: string; responsavelId?: string; observacao?: string
     }
+
+    const bom = await prisma.produtoBom.findUnique({ where: { produtoId: data.produtoId } })
+    if (!bom) return reply.code(400).send({ error: 'Produto não possui composição BOM cadastrada.' })
 
     const [{ nextval }] = await prisma.$queryRaw<[{ nextval: bigint }]>`SELECT nextval('ordem_producao_numero_seq')`
     const numero = String(Number(nextval)).padStart(6, '0')
@@ -152,7 +201,7 @@ export async function producaoRoutes(app: FastifyInstance) {
 
     const ordem = await prisma.ordemProducao.create({
       data: { ...rest as never, dataProducao: new Date(dataProducao), numero, status: 'PLANEJADA' },
-      include: { fichaTecnica: true },
+      include: { produto: { select: { nome: true } } },
     })
 
     return reply.code(201).send(ordem)
@@ -161,7 +210,7 @@ export async function producaoRoutes(app: FastifyInstance) {
   app.put('/ordens/:id', async (request, reply) => {
     const { id } = request.params as { id: string }
     const data = request.body as {
-      fichaTecnicaId: string; quantidade: number; turno: string
+      produtoId: string; quantidade: number; turno: string
       dataProducao: string; observacao?: string
     }
 
@@ -170,11 +219,14 @@ export async function producaoRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: 'Apenas ordens com status PLANEJADA podem ser editadas.' })
     }
 
+    const bom = await prisma.produtoBom.findUnique({ where: { produtoId: data.produtoId } })
+    if (!bom) return reply.code(400).send({ error: 'Produto não possui composição BOM cadastrada.' })
+
     const { dataProducao, ...rest } = data
     const ordem = await prisma.ordemProducao.update({
       where: { id },
       data: { ...rest as never, dataProducao: new Date(dataProducao) },
-      include: { fichaTecnica: { include: { produto: { select: { nome: true } } } } },
+      include: { produto: { select: { nome: true } } },
     })
 
     return reply.send(ordem)
@@ -213,14 +265,7 @@ export async function producaoRoutes(app: FastifyInstance) {
 
     const ordem = await prisma.ordemProducao.findUnique({
       where: { id },
-      include: {
-        fichaTecnica: {
-          include: {
-            produto: true,
-            ingredientes: true,
-          },
-        },
-      },
+      select: { id: true, numero: true, produtoId: true, quantidade: true, quantidadeProduzida: true, status: true },
     })
 
     if (!ordem) return reply.code(404).send({ error: 'Ordem não encontrada.' })
@@ -233,8 +278,13 @@ export async function producaoRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: `Quantidade excede o restante a produzir (${restante.toFixed(3)}).` })
     }
 
-    const ficha = ordem.fichaTecnica
-    const fator = quantidade / Number(ficha.rendimento)
+    const bom = await prisma.produtoBom.findUnique({
+      where: { produtoId: ordem.produtoId },
+      include: { itens: true },
+    })
+    if (!bom) return reply.code(400).send({ error: 'Produto não possui composição BOM — apontamento não pode gerar movimentações.' })
+
+    const fator = quantidade / Number(bom.qtdeProduzida)
     const novoTotal = Number(ordem.quantidadeProduzida) + quantidade
     const concluida = novoTotal >= Number(ordem.quantidade) - 0.001
     const obs = `Apontamento OP ${ordem.numero}${observacao ? ' — ' + observacao : ''}`
@@ -247,21 +297,21 @@ export async function producaoRoutes(app: FastifyInstance) {
 
       // Entrada do produto acabado vinculada ao apontamento
       await tx.movimentacaoEstoque.create({
-        data: { produtoId: ficha.produtoId, apontamentoId: apt.id, tipo: 'ENTRADA', quantidade, observacao: obs },
+        data: { produtoId: ordem.produtoId, apontamentoId: apt.id, tipo: 'ENTRADA', quantidade, observacao: obs },
       })
       await tx.produto.update({
-        where: { id: ficha.produtoId },
+        where: { id: ordem.produtoId },
         data: { estoqueAtual: { increment: quantidade } },
       })
 
-      // Saída proporcional de cada insumo
-      for (const ing of ficha.ingredientes) {
-        const consumo = Number(ing.quantidade) * fator
+      // Saída proporcional de cada componente BOM (com percentual de perda)
+      for (const item of bom.itens) {
+        const consumo = Number(item.quantidade) * fator * (1 + Number(item.percPerda) / 100)
         await tx.movimentacaoEstoque.create({
-          data: { produtoId: ing.produtoId, apontamentoId: apt.id, tipo: 'SAIDA', quantidade: consumo, observacao: obs },
+          data: { produtoId: item.componenteId, apontamentoId: apt.id, tipo: 'SAIDA', quantidade: consumo, observacao: obs },
         })
         await tx.produto.update({
-          where: { id: ing.produtoId },
+          where: { id: item.componenteId },
           data: { estoqueAtual: { decrement: consumo } },
         })
       }

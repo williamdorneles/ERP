@@ -15,8 +15,8 @@ import { Form } from '../../components/ui/Form'
 interface OrdemProducao {
   id: string; numero: string; status: string; turno: string
   quantidade: number; quantidadeProduzida: number; dataProducao: string
-  fichaTecnicaId: string; observacao?: string
-  fichaTecnica: { codigo: string; produto: { nome: string } }
+  produtoId: string; observacao?: string
+  produto: { nome: string }
   responsavel?: { nome: string }
 }
 
@@ -87,7 +87,7 @@ function ApontamentoForm({ ordem, onSuccess, onCancel }: {
       <div className="bg-gray-50 rounded-lg border border-gray-200 p-4 space-y-3">
         <div className="flex justify-between text-sm">
           <span className="text-gray-500">Produto</span>
-          <span className="font-semibold text-gray-900">{ordem.fichaTecnica.produto.nome}</span>
+          <span className="font-semibold text-gray-900">{ordem.produto.nome}</span>
         </div>
         <div className="flex justify-between text-sm">
           <span className="text-gray-500">Quantidade planejada</span>
@@ -298,7 +298,7 @@ export function OrdensProducaoPage() {
             <h2 className="text-2xl font-bold text-gray-900">
               Histórico de Apontamentos — OP {ordemSel.numero}
             </h2>
-            <p className="text-xs text-gray-400">{ordemSel.fichaTecnica.produto.nome}</p>
+            <p className="text-xs text-gray-400">{ordemSel.produto.nome}</p>
           </div>
         </div>
 
@@ -500,7 +500,7 @@ export function OrdensProducaoPage() {
     if (!mostrarCanceladas && o.status === 'CANCELADA') return false
     if (!busca) return true
     const q = busca.toLowerCase()
-    return o.numero.includes(q) || o.fichaTecnica.produto.nome.toLowerCase().includes(q)
+    return o.numero.includes(q) || o.produto.nome.toLowerCase().includes(q)
   })
 
   return (
@@ -574,7 +574,7 @@ export function OrdensProducaoPage() {
                       o.status === 'CANCELADA' && 'opacity-50',
                     )}>
                     <td className="px-4 py-3 font-mono text-xs font-bold text-gray-700">{o.numero}</td>
-                    <td className="px-4 py-3 font-medium text-gray-900">{o.fichaTecnica.produto.nome}</td>
+                    <td className="px-4 py-3 font-medium text-gray-900">{o.produto.nome}</td>
                     <td className="px-4 py-3 text-right tabular-nums text-gray-700">
                       {planejada.toFixed(2)}
                     </td>

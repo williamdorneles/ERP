@@ -65,30 +65,41 @@ export async function titulosRoutes(app: FastifyInstance) {
 
   // ── Resumo (dashboard) ────────────────────────────────────────
 
-  app.get('/resumo', async () => {
+  app.get('/resumo', async (request) => {
+    const { vencimentoInicio, vencimentoFim } = request.query as {
+      vencimentoInicio?: string; vencimentoFim?: string
+    }
+
     const hoje = new Date()
     hoje.setHours(0, 0, 0, 0)
     const em7Dias = new Date(hoje); em7Dias.setDate(em7Dias.getDate() + 7)
 
+    const periodoWhere = vencimentoInicio || vencimentoFim ? {
+      vencimento: {
+        ...(vencimentoInicio && { gte: new Date(vencimentoInicio) }),
+        ...(vencimentoFim   && { lte: new Date(vencimentoFim + 'T23:59:59') }),
+      },
+    } : {}
+
     const [totalPagar, totalReceber, vencidosPagar, vencidosReceber, a7Dias] = await Promise.all([
       prisma.parcelaFinanceira.aggregate({
-        where: { status: 'ABERTO', titulo: { tipo: 'PAGAR', status: { notIn: ['CANCELADO', 'QUITADO'] } } },
+        where: { status: 'ABERTO', titulo: { tipo: 'PAGAR', status: { notIn: ['CANCELADO', 'QUITADO'] } }, ...periodoWhere },
         _sum: { valor: true },
       }),
       prisma.parcelaFinanceira.aggregate({
-        where: { status: 'ABERTO', titulo: { tipo: 'RECEBER', status: { notIn: ['CANCELADO', 'QUITADO'] } } },
+        where: { status: 'ABERTO', titulo: { tipo: 'RECEBER', status: { notIn: ['CANCELADO', 'QUITADO'] } }, ...periodoWhere },
         _sum: { valor: true },
       }),
       prisma.parcelaFinanceira.aggregate({
-        where: { status: 'ABERTO', vencimento: { lt: hoje }, titulo: { tipo: 'PAGAR' } },
+        where: { status: 'ABERTO', vencimento: { lt: hoje, ...periodoWhere.vencimento }, titulo: { tipo: 'PAGAR' } },
         _sum: { valor: true }, _count: true,
       }),
       prisma.parcelaFinanceira.aggregate({
-        where: { status: 'ABERTO', vencimento: { lt: hoje }, titulo: { tipo: 'RECEBER' } },
+        where: { status: 'ABERTO', vencimento: { lt: hoje, ...periodoWhere.vencimento }, titulo: { tipo: 'RECEBER' } },
         _sum: { valor: true }, _count: true,
       }),
       prisma.parcelaFinanceira.aggregate({
-        where: { status: 'ABERTO', vencimento: { gte: hoje, lte: em7Dias } },
+        where: { status: 'ABERTO', vencimento: { gte: hoje, lte: em7Dias, ...periodoWhere.vencimento } },
         _sum: { valor: true }, _count: true,
       }),
     ])
@@ -256,8 +267,7 @@ export async function titulosRoutes(app: FastifyInstance) {
       const docLabel = parcela.titulo.documento ? ` (nº ${parcela.titulo.documento})` : ''
       const tituloLabel = `${prefixo} — ${parcela.titulo.descricao}${docLabel}`
       const parcelaLabel = `parcela ${parcela.numero}/${totalParcelas}`
-      const pessoa = parcela.titulo.pessoa?.nome ?? null
-      const partes = [tituloLabel, parcelaLabel, pessoa, data.observacao || null].filter(Boolean)
+      const partes = [tituloLabel, parcelaLabel, data.observacao || null].filter(Boolean)
       const descricao = partes.join(', ')
 
       // Lança na conta bancária (transação financeira)

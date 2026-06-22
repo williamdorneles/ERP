@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../lib/api'
-import { Plus, Package, Pencil, PowerOff, Power, AlertTriangle, ArrowLeft, Layers, XCircle, CheckCircle2, History } from 'lucide-react'
+import { Plus, Package, Pencil, PowerOff, Power, AlertTriangle, ArrowLeft, Layers, XCircle, CheckCircle2, History, Trash2 } from 'lucide-react'
 import clsx from 'clsx'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { useForm, Controller } from 'react-hook-form'
@@ -95,19 +95,21 @@ const tipoLabel: Record<string, string> = {
 // ─── Custos Tab ───────────────────────────────────────────────────────────────
 
 const motivoLabel: Record<string, string> = {
-  MANUAL:         'Edição manual',
-  NF_ENTRADA:     'NF de Entrada',
-  FORMACAO_CUSTO: 'Formação de custo',
-  ESTORNO_NF:     'Estorno de NF',
-  BOM:            'Composição (BOM)',
+  MANUAL:               'Edição manual',
+  NF_ENTRADA:           'NF de Entrada',
+  FORMACAO_CUSTO:       'Formação de custo',
+  ESTORNO_NF:           'Estorno de NF',
+  BOM:                  'Composição (BOM)',
+  MOVIMENTACAO_ESTOQUE: 'Movimentação de estoque',
 }
 
 const motivoCor: Record<string, string> = {
-  MANUAL:         'bg-gray-100 text-gray-600',
-  NF_ENTRADA:     'bg-blue-100 text-blue-700',
-  FORMACAO_CUSTO: 'bg-amber-100 text-amber-700',
-  ESTORNO_NF:     'bg-red-100 text-red-600',
-  BOM:            'bg-purple-100 text-purple-700',
+  MANUAL:               'bg-gray-100 text-gray-600',
+  NF_ENTRADA:           'bg-blue-100 text-blue-700',
+  FORMACAO_CUSTO:       'bg-amber-100 text-amber-700',
+  ESTORNO_NF:           'bg-red-100 text-red-600',
+  BOM:                  'bg-purple-100 text-purple-700',
+  MOVIMENTACAO_ESTOQUE: 'bg-teal-100 text-teal-700',
 }
 
 interface RegistroCusto {
@@ -120,10 +122,23 @@ interface RegistroCusto {
 }
 
 function CustosTab({ produtoId }: { produtoId?: string }) {
+  const queryClient = useQueryClient()
+  const [registroExcluir, setRegistroExcluir] = useState<RegistroCusto | null>(null)
+
   const { data: custos = [], isLoading } = useQuery<RegistroCusto[]>({
     queryKey: ['produto-custos', produtoId],
     queryFn: () => api.get(`/produtos/${produtoId}/custos`).then(r => r.data),
     enabled: !!produtoId,
+  })
+
+  const excluirMutation = useMutation({
+    mutationFn: (custoId: string) => api.delete(`/produtos/${produtoId}/custos/${custoId}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['produto-custos', produtoId] })
+      queryClient.invalidateQueries({ queryKey: ['produtos'] })
+      queryClient.invalidateQueries({ queryKey: ['produtos-estoque'] })
+      setRegistroExcluir(null)
+    },
   })
 
   if (!produtoId) {
@@ -159,6 +174,7 @@ function CustosTab({ produtoId }: { produtoId?: string }) {
             <th className="text-left px-4 py-2.5 font-medium">Motivo</th>
             <th className="text-right px-4 py-2.5 font-medium">Custo</th>
             <th className="text-left px-4 py-2.5 font-medium">Observação</th>
+            <th className="text-center px-4 py-2.5 font-medium w-16">Ações</th>
           </tr>
         </thead>
         <tbody className="divide-y">
@@ -177,10 +193,43 @@ function CustosTab({ produtoId }: { produtoId?: string }) {
                 {r.observacao}
                 {r.nfEntrada?.numero && <span className="ml-1 text-blue-600">· NF {r.nfEntrada.numero}</span>}
               </td>
+              <td className="px-4 py-2.5 text-center">
+                <button
+                  type="button"
+                  onClick={() => setRegistroExcluir(r)}
+                  title="Excluir registro e reverter ao custo anterior"
+                  className="p-1.5 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 transition"
+                >
+                  <Trash2 size={15} />
+                </button>
+              </td>
             </tr>
           ))}
         </tbody>
       </table>
+
+      <ConfirmDialog
+        open={!!registroExcluir}
+        title="Excluir registro de custo"
+        variant="danger"
+        confirmLabel="Excluir"
+        loading={excluirMutation.isPending}
+        onConfirm={() => registroExcluir && excluirMutation.mutate(registroExcluir.id)}
+        onCancel={() => setRegistroExcluir(null)}
+        message={
+          registroExcluir ? (
+            <>
+              Excluir o registro de <strong>{fmtR$(Number(registroExcluir.custo))}</strong>?
+              O custo do produto será revertido ao registro anterior do histórico.
+              {custos[0]?.id === registroExcluir.id && (
+                <span className="block mt-2 text-amber-600">
+                  Este é o registro mais recente — o custo atual do produto será alterado.
+                </span>
+              )}
+            </>
+          ) : ''
+        }
+      />
     </div>
   )
 }
