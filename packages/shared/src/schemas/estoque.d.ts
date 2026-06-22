@@ -63,6 +63,7 @@ export declare const CriarMovimentacaoSchema: z.ZodObject<{
     produtoId: z.ZodString;
     tipo: z.ZodEnum<["ENTRADA", "SAIDA", "AJUSTE", "PERDA"]>;
     quantidade: z.ZodNumber;
+    custoUnitario: z.ZodOptional<z.ZodNumber>;
     lote: z.ZodOptional<z.ZodString>;
     dataVencimento: z.ZodOptional<z.ZodDate>;
     observacao: z.ZodOptional<z.ZodString>;
@@ -70,6 +71,7 @@ export declare const CriarMovimentacaoSchema: z.ZodObject<{
     tipo: "ENTRADA" | "SAIDA" | "AJUSTE" | "PERDA";
     quantidade: number;
     produtoId: string;
+    custoUnitario?: number | undefined;
     observacao?: string | undefined;
     lote?: string | undefined;
     dataVencimento?: Date | undefined;
@@ -77,6 +79,7 @@ export declare const CriarMovimentacaoSchema: z.ZodObject<{
     tipo: "ENTRADA" | "SAIDA" | "AJUSTE" | "PERDA";
     quantidade: number;
     produtoId: string;
+    custoUnitario?: number | undefined;
     observacao?: string | undefined;
     lote?: string | undefined;
     dataVencimento?: Date | undefined;

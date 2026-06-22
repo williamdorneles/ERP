@@ -34,6 +34,7 @@ export const CriarMovimentacaoSchema = z.object({
     produtoId: z.string().uuid('produtoId deve ser um UUID válido'),
     tipo: z.enum(['ENTRADA', 'SAIDA', 'AJUSTE', 'PERDA']),
     quantidade: z.number().positive('Quantidade deve ser maior que zero'),
+    custoUnitario: z.number().min(0).optional(),
     lote: z.string().max(50).optional(),
     dataVencimento: z.coerce.date().optional(),
     observacao: z.string().max(500).optional(),
