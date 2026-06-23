@@ -4,6 +4,7 @@ import { requirePerfil } from '../../plugins/auth.plugin.js'
 import { parseNFe } from './nfe.parser.js'
 import { consultarDistribuicao } from './sefaz-distribuicao.service.js'
 import { propagarCustoComponente } from '../produtos/custo-bom.service.js'
+import { converterQtde, custoPorUnidadeEstoque } from './conversao.js'
 import { z } from 'zod'
 
 // ── Schemas ───────────────────────────────────────────────────────────────────
@@ -393,16 +394,10 @@ export async function nfEntradaRoutes(app: FastifyInstance) {
         if (!prod) continue
 
         // Aplica conversão de unidade se configurada no produto
-        const fator = prod.fatorConversao ? Number(prod.fatorConversao) : 1
-        const op = prod.operacaoConversao
-        const qtdeNf = Number(item.quantidade)
-        const qtdeEstoque = (op === 'MULTIPLICAR') ? qtdeNf * fator
-          : (op === 'DIVIDIR') ? qtdeNf / fator
-          : qtdeNf
-        const valorTotal = Number(item.valorTotal)
+        const qtdeEstoque = converterQtde(Number(item.quantidade), prod.fatorConversao ? Number(prod.fatorConversao) : null, prod.operacaoConversao)
         // Custo da nota gravado na movimentação (rastreabilidade e base do estorno),
         // sem alterar o custo do produto.
-        const custoNf = +(qtdeEstoque > 0 ? valorTotal / qtdeEstoque : Number(item.valorUnitario)).toFixed(4)
+        const custoNf = +custoPorUnidadeEstoque(Number(item.valorTotal), qtdeEstoque, Number(item.valorUnitario)).toFixed(4)
 
         await tx.movimentacaoEstoque.create({
           data: {
@@ -534,18 +529,11 @@ export async function nfEntradaRoutes(app: FastifyInstance) {
       for (const item of nf.itens) {
         if (!item.produtoId) continue
         const prod = produtoMap.get(item.produtoId)
-        const fator = prod?.fatorConversao ? Number(prod.fatorConversao) : 1
-        const op = prod?.operacaoConversao
-        const qtdeNf = Number(item.quantidade)
-        const qtdeEstoque = op === 'MULTIPLICAR' ? qtdeNf * fator
-          : op === 'DIVIDIR' ? qtdeNf / fator
-          : qtdeNf
+        const qtdeEstoque = converterQtde(Number(item.quantidade), prod?.fatorConversao ? Number(prod.fatorConversao) : null, prod?.operacaoConversao)
 
         const participacao = Number(item.valorTotal) / totalProdutos
         const adicionalItem = totalAdicional * participacao
-        const custoNovo = qtdeEstoque > 0
-          ? (Number(item.valorTotal) + adicionalItem) / qtdeEstoque
-          : Number(item.valorUnitario)
+        const custoNovo = custoPorUnidadeEstoque(Number(item.valorTotal) + adicionalItem, qtdeEstoque, Number(item.valorUnitario))
 
         await tx.produto.update({
           where: { id: item.produtoId },
@@ -592,18 +580,11 @@ export async function nfEntradaRoutes(app: FastifyInstance) {
     const totalProdutos = nf.itens.reduce((s, i) => s + Number(i.valorTotal), 0)
 
     const itens = nf.itens.map(item => {
-      const fator = item.produto?.fatorConversao ? Number(item.produto.fatorConversao) : 1
-      const op = item.produto?.operacaoConversao
-      const qtdeNf = Number(item.quantidade)
-      const qtdeEstoque = op === 'MULTIPLICAR' ? qtdeNf * fator
-        : op === 'DIVIDIR' ? qtdeNf / fator
-        : qtdeNf
+      const qtdeEstoque = converterQtde(Number(item.quantidade), item.produto?.fatorConversao ? Number(item.produto.fatorConversao) : null, item.produto?.operacaoConversao)
 
       const participacao = totalProdutos > 0 ? Number(item.valorTotal) / totalProdutos : 0
       const adicionalItem = totalAdicional * participacao
-      const custoNovo = qtdeEstoque > 0
-        ? (Number(item.valorTotal) + adicionalItem) / qtdeEstoque
-        : Number(item.valorUnitario)
+      const custoNovo = custoPorUnidadeEstoque(Number(item.valorTotal) + adicionalItem, qtdeEstoque, Number(item.valorUnitario))
       return {
         id: item.id,
         descricao: item.descricao,
@@ -730,9 +711,20 @@ export async function nfEntradaRoutes(app: FastifyInstance) {
     if (!nf) return reply.code(404).send({ error: 'NF não encontrada.' })
     if (!nf.estoqueElancado) return reply.code(409).send({ error: 'Estoque não foi lançado para esta NF.' })
 
+    const produtoIds = nf.itens.map(i => i.produtoId!).filter(Boolean)
+    const produtos = await prisma.produto.findMany({
+      where: { id: { in: produtoIds } },
+      select: { id: true, fatorConversao: true, operacaoConversao: true },
+    })
+    const produtoMap = new Map(produtos.map(p => [p.id, p]))
+
     await prisma.$transaction(async (tx) => {
       for (const item of nf.itens) {
         if (!item.produtoId) continue
+
+        // Aplica a mesma conversão usada ao lançar o estoque, para reverter a quantidade correta
+        const prod = produtoMap.get(item.produtoId)
+        const qtdeEstoque = converterQtde(Number(item.quantidade), prod?.fatorConversao ? Number(prod.fatorConversao) : null, prod?.operacaoConversao)
 
         // Busca o custo anterior à entrada desta NF para este produto
         const movAnterior = await tx.movimentacaoEstoque.findFirst({
@@ -745,14 +737,16 @@ export async function nfEntradaRoutes(app: FastifyInstance) {
           select: { custoUnitario: true },
         })
 
-        const custoAnterior = movAnterior ? Number(movAnterior.custoUnitario) : Number(item.valorUnitario)
+        // Fallback (primeira entrada do produto): custo por unidade de estoque, não por unidade de compra
+        const custoFallback = custoPorUnidadeEstoque(Number(item.valorTotal), qtdeEstoque, Number(item.valorUnitario))
+        const custoAnterior = movAnterior ? Number(movAnterior.custoUnitario) : custoFallback
 
         await tx.movimentacaoEstoque.create({
           data: {
             produtoId: item.produtoId,
             nfEntradaId: id,
             tipo: 'AJUSTE',
-            quantidade: -item.quantidade,
+            quantidade: +(-qtdeEstoque).toFixed(4),
             custoUnitario: +custoAnterior.toFixed(4),
             observacao: `Estorno estoque NF ${nf.numero || id} — ${item.descricao}`,
           },
@@ -761,7 +755,7 @@ export async function nfEntradaRoutes(app: FastifyInstance) {
         await tx.produto.update({
           where: { id: item.produtoId },
           data: {
-            estoqueAtual: { decrement: item.quantidade },
+            estoqueAtual: { decrement: +qtdeEstoque.toFixed(4) },
             ultimoCusto: +custoAnterior.toFixed(4),
             custoUnitario: +custoAnterior.toFixed(4),
           },
