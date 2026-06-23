@@ -42,7 +42,9 @@ export function classificarTransacaoSync(
         case 'TERMINA_COM': match = sujeito.endsWith(valor); break
         case 'IGUAL':       match = sujeito === valor; break
         case 'REGEX': {
-          try { match = new RegExp(valor, 'i').test(sujeito) } catch { match = false }
+          // Usa o padrão cru (não `valor`): uppercase corromperia metacaracteres
+          // como \s→\S, \d→\D, \w→\W. A flag 'i' já cobre a diferença de caixa.
+          try { match = new RegExp(regra.valorCorrespondencia ?? '', 'i').test(sujeito) } catch { match = false }
           break
         }
         case 'INTERVALO': {
