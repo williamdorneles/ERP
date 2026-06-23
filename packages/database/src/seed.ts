@@ -140,6 +140,12 @@ async function main() {
 
   const configuracoesDefault = [
     { chave: 'METODO_CUSTO', valor: 'MEDIO', descricao: 'Método de custo usado no CMV e margens: MEDIO (Custo Médio Ponderado) ou ULTIMO (Último Custo)' },
+    // Contas padrão de encargos financeiros (DRE) — valor vazio até o usuário vincular
+    { chave: 'CONTA_TARIFA_BANCARIA', valor: '', descricao: 'Conta do plano de contas para tarifas bancárias (despesa financeira) lançadas na conciliação/baixa' },
+    { chave: 'CONTA_JUROS_PAGOS', valor: '', descricao: 'Conta do plano de contas para juros e multas pagos por atraso (despesa financeira)' },
+    { chave: 'CONTA_JUROS_RECEBIDOS', valor: '', descricao: 'Conta do plano de contas para juros e multas recebidos por atraso (receita financeira)' },
+    { chave: 'CONTA_DESCONTO_OBTIDO', valor: '', descricao: 'Conta do plano de contas para descontos obtidos em pagamentos (receita / redução de despesa)' },
+    { chave: 'CONTA_DESCONTO_CONCEDIDO', valor: '', descricao: 'Conta do plano de contas para descontos concedidos em recebimentos (despesa / redução de receita)' },
   ]
 
   for (const cfg of configuracoesDefault) {

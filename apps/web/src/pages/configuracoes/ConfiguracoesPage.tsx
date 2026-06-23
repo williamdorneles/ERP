@@ -6,10 +6,10 @@ import { useAuthStore } from '../../store/auth'
 import { FormField, Input, Select } from '../../components/ui/FormField'
 import { Button } from '../../components/ui/Button'
 import { Form } from '../../components/ui/Form'
-import { Settings, Receipt, Building2, Shield, CheckCircle2, AlertTriangle, Upload } from 'lucide-react'
+import { Settings, Receipt, Building2, Shield, CheckCircle2, AlertTriangle, Upload, Coins, Search, X } from 'lucide-react'
 import clsx from 'clsx'
 
-type Secao = 'sistema' | 'fiscal'
+type Secao = 'sistema' | 'financeiro' | 'fiscal'
 type TabFiscal = 'empresa' | 'endereco' | 'nfe' | 'certificado'
 
 interface Configuracao {
@@ -48,6 +48,15 @@ export function ConfiguracoesPage() {
             <Settings size={16} /> Sistema
           </button>
           <button
+            onClick={() => setSecao('financeiro')}
+            className={clsx(
+              'w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition',
+              secao === 'financeiro' ? 'bg-primary-50 text-primary-700' : 'text-gray-600 hover:bg-gray-100',
+            )}
+          >
+            <Coins size={16} /> Financeiro
+          </button>
+          <button
             onClick={() => setSecao('fiscal')}
             className={clsx(
               'w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition',
@@ -61,6 +70,7 @@ export function ConfiguracoesPage() {
         {/* Conteúdo */}
         <div className="flex-1 min-w-0">
           {secao === 'sistema' && <SecaoSistema isAdmin={isAdmin} />}
+          {secao === 'financeiro' && <SecaoFinanceiro isAdmin={isAdmin} />}
           {secao === 'fiscal' && <SecaoFiscal />}
         </div>
       </div>
@@ -145,6 +155,189 @@ function SecaoSistema({ isAdmin }: { isAdmin: boolean }) {
             </p>
           </div>
         ))}
+      </div>
+    </div>
+  )
+}
+
+// ─── Seção Financeiro (contas padrão de encargos) ──────────────────────────────
+
+interface ContaFin {
+  id: string
+  codigo: string
+  nome: string
+  codigoCompleto: string | null
+  tipo: string
+  isAnalitica: boolean
+}
+
+const CONTAS_ENCARGO: { chave: string; label: string; hint: string }[] = [
+  { chave: 'CONTA_TARIFA_BANCARIA',    label: 'Tarifa bancária',                hint: 'Despesa financeira (TED/PIX/boleto)' },
+  { chave: 'CONTA_JUROS_PAGOS',        label: 'Juros/multa pagos',              hint: 'Despesa financeira por atraso a fornecedores' },
+  { chave: 'CONTA_JUROS_RECEBIDOS',    label: 'Juros/multa recebidos',          hint: 'Receita financeira por atraso de clientes' },
+  { chave: 'CONTA_DESCONTO_OBTIDO',    label: 'Desconto obtido (pagamento)',    hint: 'Receita / redução de despesa' },
+  { chave: 'CONTA_DESCONTO_CONCEDIDO', label: 'Desconto concedido (recebimento)', hint: 'Despesa / redução de receita' },
+]
+
+function SecaoFinanceiro({ isAdmin }: { isAdmin: boolean }) {
+  const qc = useQueryClient()
+  const [salvando, setSalvando] = useState<string | null>(null)
+  const [sucesso, setSucesso] = useState<string | null>(null)
+  const [erro, setErro] = useState<string | null>(null)
+
+  const { data: configs = [], isLoading: loadingCfg } = useQuery<Configuracao[]>({
+    queryKey: ['configuracoes'],
+    queryFn: () => api.get('/configuracoes').then(r => r.data),
+  })
+  const { data: contas = [], isLoading: loadingContas } = useQuery<ContaFin[]>({
+    queryKey: ['contas-financeiras'],
+    queryFn: () => api.get('/financeiro/contas').then(r => r.data),
+  })
+
+  const valorPorChave = new Map(configs.map(c => [c.chave, c.valor]))
+  const contasAnaliticas = contas.filter(c => c.isAnalitica)
+
+  async function salvar(chave: string, contaId: string) {
+    setSalvando(chave); setErro(null); setSucesso(null)
+    try {
+      await api.put(`/configuracoes/${chave}`, { valor: contaId })
+      await qc.invalidateQueries({ queryKey: ['configuracoes'] })
+      setSucesso('Conta vinculada com sucesso.')
+      setTimeout(() => setSucesso(null), 3000)
+    } catch {
+      setErro('Erro ao salvar a conta. Apenas administradores podem alterar.')
+    } finally {
+      setSalvando(null)
+    }
+  }
+
+  if (loadingCfg || loadingContas) return <div className="text-gray-400 text-sm py-8 text-center">Carregando...</div>
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 text-sm text-blue-700">
+        Vincule cada encargo a uma conta do plano de contas (analítica). Esses valores serão usados para
+        lançar juros, multas, tarifas e descontos na conta correta do DRE durante a conciliação e a baixa.
+      </div>
+
+      {!isAdmin && (
+        <div className="bg-amber-50 border border-amber-200 text-amber-700 px-4 py-3 rounded-lg text-sm">
+          Apenas administradores podem alterar configurações.
+        </div>
+      )}
+      {erro && <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">{erro}</div>}
+      {sucesso && <div className="bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded-lg text-sm">{sucesso}</div>}
+
+      <div className="bg-white rounded-xl border border-gray-200 divide-y divide-gray-100">
+        {CONTAS_ENCARGO.map(({ chave, label, hint }) => (
+          <div key={chave} className="px-6 py-4 flex items-center gap-4">
+            <div className="w-56 shrink-0">
+              <p className="font-medium text-gray-900 text-sm">{label}</p>
+              <p className="text-xs text-gray-500 mt-0.5">{hint}</p>
+            </div>
+            <div className="flex-1 min-w-0">
+              <ContaPicker
+                contas={contasAnaliticas}
+                value={valorPorChave.get(chave) || ''}
+                disabled={!isAdmin || salvando === chave}
+                onChange={contaId => salvar(chave, contaId)}
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function ContaPicker({
+  contas, value, disabled, onChange,
+}: {
+  contas: ContaFin[]
+  value: string
+  disabled: boolean
+  onChange: (contaId: string) => void
+}) {
+  const [aberto, setAberto] = useState(false)
+  const [busca, setBusca] = useState('')
+
+  const selecionada = contas.find(c => c.id === value)
+  const filtradas = busca.trim()
+    ? contas.filter(c =>
+        c.nome.toLowerCase().includes(busca.toLowerCase()) ||
+        (c.codigoCompleto ?? c.codigo).includes(busca),
+      )
+    : contas
+
+  if (!aberto) {
+    return (
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => { setAberto(true); setBusca('') }}
+        className={clsx(
+          'w-full flex items-center justify-between gap-2 px-3 py-2 text-sm border rounded-lg text-left transition',
+          disabled ? 'bg-gray-50 text-gray-400 cursor-not-allowed border-gray-200' : 'border-gray-300 hover:border-primary-400',
+        )}
+      >
+        {selecionada ? (
+          <span className="truncate">
+            <span className="font-mono text-gray-400 mr-2">{selecionada.codigoCompleto ?? selecionada.codigo}</span>
+            {selecionada.nome}
+          </span>
+        ) : (
+          <span className="text-gray-400">Não vinculada — clique para escolher</span>
+        )}
+        <Search size={14} className="text-gray-400 shrink-0" />
+      </button>
+    )
+  }
+
+  return (
+    <div className="border border-primary-300 rounded-lg p-2 bg-white space-y-2 shadow-sm">
+      <div className="relative">
+        <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+        <input
+          autoFocus
+          type="text"
+          value={busca}
+          onChange={e => setBusca(e.target.value)}
+          placeholder="Buscar conta por código ou nome..."
+          className="w-full pl-8 pr-8 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500"
+        />
+        <button type="button" onClick={() => setAberto(false)} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
+          <X size={14} />
+        </button>
+      </div>
+      <div className="max-h-48 overflow-y-auto space-y-0.5">
+        {value && (
+          <button
+            type="button"
+            onClick={() => { onChange(''); setAberto(false) }}
+            className="w-full text-left px-2 py-1.5 rounded text-xs text-red-500 hover:bg-red-50"
+          >
+            Remover vínculo
+          </button>
+        )}
+        {filtradas.slice(0, 30).map(conta => (
+          <button
+            key={conta.id}
+            type="button"
+            onClick={() => { onChange(conta.id); setAberto(false) }}
+            className={clsx(
+              'w-full text-left px-2 py-1.5 rounded text-xs transition',
+              value === conta.id ? 'bg-primary-600 text-white' : 'hover:bg-gray-100 text-gray-700',
+            )}
+          >
+            <span className={clsx('font-mono mr-2', value === conta.id ? 'text-primary-100' : 'text-gray-400')}>
+              {conta.codigoCompleto ?? conta.codigo}
+            </span>
+            {conta.nome}
+          </button>
+        ))}
+        {filtradas.length === 0 && (
+          <p className="text-xs text-gray-400 text-center py-2">Nenhuma conta encontrada</p>
+        )}
       </div>
     </div>
   )
