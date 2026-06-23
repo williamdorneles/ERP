@@ -6,4 +6,5 @@ export * from './schemas/financeiro';
 export * from './schemas/producao';
 export * from './schemas/produtos';
 export * from './schemas/vendas';
+export * from './conciliacao';
 //# sourceMappingURL=index.d.ts.map

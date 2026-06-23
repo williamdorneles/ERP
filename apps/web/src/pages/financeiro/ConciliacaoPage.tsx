@@ -14,6 +14,7 @@ import { Button } from '../../components/ui/Button'
 import { Form } from '../../components/ui/Form'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { Modal } from '../../components/ui/Modal'
+import { selecionarAutoConciliacoes, type AutoCandidato } from '@erp/shared'
 
 // ══════════════════════════════════════════════════════════════════
 // Types
@@ -595,6 +596,8 @@ function TabConciliar() {
   const [busca, setBusca] = useState('')
   const [confirmando, setConfirmando] = useState<string | null>(null)
   const [filtroConfianca, setFiltroConfianca] = useState<string>('TODAS')
+  const [autoPreview, setAutoPreview] = useState<AutoCandidato[] | null>(null)
+  const [autoSelecionados, setAutoSelecionados] = useState<Set<string>>(new Set())
 
   const { data: contas } = useQuery<{ dados: ContaBancaria[] }>({
     queryKey: ['contas-bancarias-lista'],
@@ -632,6 +635,36 @@ function TabConciliar() {
   function handleConfirmar(transacaoId: string, parcelaId: string, encargos?: Encargos) {
     setConfirmando(`${transacaoId}-${parcelaId}`)
     confirmar.mutate({ transacaoId, parcelaId, encargos })
+  }
+
+  // Auto-conciliação: calcula candidatos seguros e abre a prévia
+  function abrirAutoConciliacao() {
+    const candidatos = selecionarAutoConciliacoes(data?.transacoes ?? [])
+    // Marca por padrão só os de valor exato (parciais/sobrepagos ficam opt-in)
+    setAutoSelecionados(new Set(candidatos.filter(c => !c.parcial && !c.sobrepago).map(c => c.transacaoId)))
+    setAutoPreview(candidatos)
+  }
+
+  const conciliarLote = useMutation({
+    mutationFn: (itens: { transacaoId: string; parcelaId: string }[]) =>
+      api.post('/conciliacao/confirmar-lote', { itens }).then(r => r.data),
+    onSuccess: (res: { total: number; conciliadas: number; falhas: { error: string }[] }) => {
+      setAutoPreview(null)
+      qc.invalidateQueries({ queryKey: ['conciliacao'] })
+      qc.invalidateQueries({ queryKey: ['titulos'] })
+      qc.invalidateQueries({ queryKey: ['titulos-resumo'] })
+      const falhasMsg = res.falhas.length > 0 ? ` ${res.falhas.length} não puderam ser conciliadas.` : ''
+      alert(`${res.conciliadas} de ${res.total} transação(ões) conciliada(s) automaticamente.${falhasMsg}`)
+    },
+    onError: () => alert('Falha ao conciliar em lote.'),
+  })
+
+  function toggleAuto(transacaoId: string) {
+    setAutoSelecionados(prev => {
+      const next = new Set(prev)
+      if (next.has(transacaoId)) next.delete(transacaoId); else next.add(transacaoId)
+      return next
+    })
   }
 
   const transacoes = useMemo(() => {
@@ -677,6 +710,11 @@ function TabConciliar() {
         <button onClick={() => refetch()} disabled={!contaId || isLoading}
           className="px-4 py-2 text-sm bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-50 transition">
           {isLoading ? 'Carregando...' : 'Buscar'}
+        </button>
+        <button onClick={abrirAutoConciliacao} disabled={!data || (data?.transacoes.length ?? 0) === 0}
+          title="Concilia automaticamente as correspondências de alta/média confiança"
+          className="flex items-center gap-1.5 px-4 py-2 text-sm border border-primary-300 text-primary-700 rounded-lg hover:bg-primary-50 disabled:opacity-50 transition">
+          <Zap size={15} /> Conciliação automática
         </button>
       </div>
 
@@ -758,6 +796,62 @@ function TabConciliar() {
             )}
           </div>
         </div>
+      )}
+
+      {/* Prévia de auto-conciliação */}
+      {autoPreview && (
+        <Modal open onClose={() => setAutoPreview(null)} title="Conciliação automática" size="xl">
+          {autoPreview.length === 0 ? (
+            <p className="text-sm text-gray-500 text-center py-6">
+              Nenhuma correspondência automática encontrada. Concilie manualmente as transações.
+            </p>
+          ) : (
+            <div className="space-y-3">
+              <p className="text-sm text-gray-600">
+                {autoPreview.length} correspondência(s) encontrada(s). Revise e desmarque o que não quiser conciliar.
+                Itens com diferença de valor (parcial/sobrepago) vêm desmarcados.
+              </p>
+              <div className="border rounded-xl divide-y divide-gray-100 max-h-[55vh] overflow-y-auto">
+                {autoPreview.map(c => (
+                  <label key={c.transacaoId} className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-gray-50">
+                    <input
+                      type="checkbox"
+                      checked={autoSelecionados.has(c.transacaoId)}
+                      onChange={() => toggleAuto(c.transacaoId)}
+                      className="h-4 w-4 accent-primary-600 shrink-0"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-gray-900 truncate">{c.txNome}</p>
+                      <p className="text-xs text-gray-500 truncate">→ {c.tituloDescricao}</p>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <p className="text-sm font-semibold text-gray-900">{fmt(c.txValor)}</p>
+                      {c.parcial && <span className="text-xs text-amber-600">parcial · sobra {fmt(Math.abs(c.diffValor))}</span>}
+                      {c.sobrepago && <span className="text-xs text-amber-600">sobrepago +{fmt(c.diffValor)}</span>}
+                    </div>
+                    <span className={clsx('text-xs px-2 py-0.5 rounded-full border shrink-0', CONFIANCA_CONFIG[c.confianca].color)}>
+                      {CONFIANCA_CONFIG[c.confianca].label}
+                    </span>
+                  </label>
+                ))}
+              </div>
+              <div className="flex justify-end gap-2 pt-2">
+                <Button variant="secondary" onClick={() => setAutoPreview(null)}>Cancelar</Button>
+                <Button
+                  disabled={autoSelecionados.size === 0 || conciliarLote.isPending}
+                  loading={conciliarLote.isPending}
+                  onClick={() => conciliarLote.mutate(
+                    autoPreview
+                      .filter(c => autoSelecionados.has(c.transacaoId))
+                      .map(c => ({ transacaoId: c.transacaoId, parcelaId: c.parcelaId })),
+                  )}
+                >
+                  Conciliar selecionadas ({autoSelecionados.size})
+                </Button>
+              </div>
+            </div>
+          )}
+        </Modal>
       )}
     </div>
   )
