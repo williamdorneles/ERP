@@ -28,6 +28,8 @@ interface Sugestao {
   valor: number; vencimento: string; diffValor: number; diffDias: number; score: number
 }
 
+interface Encargos { tarifa?: number; juros?: number; multa?: number }
+
 interface TransacaoConciliacao {
   id: string; data: string; valor: number; tipo: 'DEBITO' | 'CREDITO'
   descricao: string | null; nomeOriginal: string | null; status: string
@@ -385,10 +387,17 @@ function ModalImportarOFX({ open, onClose, onVerTransacoes }: {
 
 function PainelSugestoes({ tx, onConfirmar, confirmando }: {
   tx: TransacaoConciliacao
-  onConfirmar: (transacaoId: string, parcelaId: string) => void
+  onConfirmar: (transacaoId: string, parcelaId: string, encargos?: Encargos) => void
   confirmando: string | null
 }) {
   const isDeb = tx.tipo === 'DEBITO'
+  const [encargoAberto, setEncargoAberto] = useState<string | null>(null)
+  const [enc, setEnc] = useState({ tarifa: '', juros: '', multa: '' })
+
+  const numEnc = (v: string) => { const x = Number(v.replace(',', '.')); return isNaN(x) || x <= 0 ? undefined : x }
+  const totalEnc = (numEnc(isDeb ? enc.tarifa : '') ?? 0) + (numEnc(enc.juros) ?? 0) + (numEnc(enc.multa) ?? 0)
+  const parseEnc = (): Encargos => ({ tarifa: isDeb ? numEnc(enc.tarifa) : undefined, juros: numEnc(enc.juros), multa: numEnc(enc.multa) })
+
   return (
     <div className="flex flex-col h-full">
       <div className={clsx('p-4 rounded-xl border mb-4', isDeb ? 'bg-red-50 border-red-100' : 'bg-green-50 border-green-100')}>
@@ -463,19 +472,76 @@ function PainelSugestoes({ tx, onConfirmar, confirmando }: {
                     </p>
                   </div>
                 </div>
-                <button
-                  onClick={() => onConfirmar(tx.id, s.parcelaId)}
-                  disabled={!!confirmando}
-                  className={clsx(
-                    'mt-3 w-full flex items-center justify-center gap-2 px-3 py-2 text-sm rounded-lg font-medium transition disabled:opacity-50',
-                    i === 0 && s.score >= 150
-                      ? 'bg-green-600 text-white hover:bg-green-700'
-                      : 'border border-gray-300 text-gray-700 hover:bg-gray-50',
-                  )}
-                >
-                  <CheckCircle2 size={15} />
-                  {isConfirmando ? 'Conciliando...' : 'Confirmar conciliação'}
-                </button>
+                {encargoAberto === s.parcelaId && (
+                  <div className="mt-3 space-y-2 bg-gray-50 border border-gray-200 rounded-lg p-3">
+                    <p className="text-xs font-medium text-gray-600">
+                      Encargos embutidos no valor do banco (rateados para o DRE)
+                    </p>
+                    <div className={clsx('grid gap-2', isDeb ? 'grid-cols-3' : 'grid-cols-2')}>
+                      {isDeb && (
+                        <label className="text-xs text-gray-500">
+                          Tarifa
+                          <input
+                            value={enc.tarifa}
+                            onChange={e => setEnc(p => ({ ...p, tarifa: e.target.value }))}
+                            placeholder="0,00"
+                            inputMode="decimal"
+                            className="mt-0.5 w-full px-2 py-1 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500"
+                          />
+                        </label>
+                      )}
+                      <label className="text-xs text-gray-500">
+                        Juros
+                        <input
+                          value={enc.juros}
+                          onChange={e => setEnc(p => ({ ...p, juros: e.target.value }))}
+                          placeholder="0,00"
+                          inputMode="decimal"
+                          className="mt-0.5 w-full px-2 py-1 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500"
+                        />
+                      </label>
+                      <label className="text-xs text-gray-500">
+                        Multa
+                        <input
+                          value={enc.multa}
+                          onChange={e => setEnc(p => ({ ...p, multa: e.target.value }))}
+                          placeholder="0,00"
+                          inputMode="decimal"
+                          className="mt-0.5 w-full px-2 py-1 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500"
+                        />
+                      </label>
+                    </div>
+                    <p className="text-xs text-gray-400">
+                      {isDeb
+                        ? 'Tarifa → conta de tarifa bancária; juros/multa → juros pagos.'
+                        : 'Juros/multa → juros recebidos.'}{' '}
+                      Principal aplicado ao título: <strong>{fmt(tx.valor - totalEnc)}</strong>.
+                      Defina as contas em Configurações &gt; Financeiro.
+                    </p>
+                  </div>
+                )}
+                <div className="mt-3 flex gap-2">
+                  <button
+                    onClick={() => setEncargoAberto(encargoAberto === s.parcelaId ? null : s.parcelaId)}
+                    disabled={!!confirmando}
+                    className="px-3 py-2 text-sm rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-50 font-medium transition disabled:opacity-50 whitespace-nowrap"
+                  >
+                    {encargoAberto === s.parcelaId ? 'Ocultar' : '+ Encargos'}
+                  </button>
+                  <button
+                    onClick={() => onConfirmar(tx.id, s.parcelaId, encargoAberto === s.parcelaId ? parseEnc() : undefined)}
+                    disabled={!!confirmando}
+                    className={clsx(
+                      'flex-1 flex items-center justify-center gap-2 px-3 py-2 text-sm rounded-lg font-medium transition disabled:opacity-50',
+                      i === 0 && s.score >= 150
+                        ? 'bg-green-600 text-white hover:bg-green-700'
+                        : 'border border-gray-300 text-gray-700 hover:bg-gray-50',
+                    )}
+                  >
+                    <CheckCircle2 size={15} />
+                    {isConfirmando ? 'Conciliando...' : 'Confirmar conciliação'}
+                  </button>
+                </div>
               </div>
             )
           })}
@@ -542,21 +608,30 @@ function TabConciliar() {
   })
 
   const confirmar = useMutation({
-    mutationFn: ({ transacaoId, parcelaId }: { transacaoId: string; parcelaId: string }) =>
-      api.post('/conciliacao/confirmar', { transacaoId, parcelaId }),
-    onSuccess: (_r, vars) => {
+    mutationFn: ({ transacaoId, parcelaId, encargos }: { transacaoId: string; parcelaId: string; encargos?: Encargos }) =>
+      api.post('/conciliacao/confirmar', { transacaoId, parcelaId, ...(encargos ?? {}) }),
+    onSuccess: (r, vars) => {
       setConfirmando(null)
       if (txSelecionada === vars.transacaoId) setTxSelecionada(null)
       qc.invalidateQueries({ queryKey: ['conciliacao'] })
       qc.invalidateQueries({ queryKey: ['titulos'] })
       qc.invalidateQueries({ queryKey: ['titulos-resumo'] })
+      const res = r?.data as { parcial?: boolean; saldoResidual?: number } | undefined
+      if (res?.parcial) {
+        const saldo = (res.saldoResidual ?? 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
+        alert(`Baixa parcial: valor menor que a parcela. Foi gerada uma nova parcela com o saldo restante de ${saldo}.`)
+      }
     },
-    onError: () => setConfirmando(null),
+    onError: (err: unknown) => {
+      setConfirmando(null)
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
+      if (msg) alert(msg)
+    },
   })
 
-  function handleConfirmar(transacaoId: string, parcelaId: string) {
+  function handleConfirmar(transacaoId: string, parcelaId: string, encargos?: Encargos) {
     setConfirmando(`${transacaoId}-${parcelaId}`)
-    confirmar.mutate({ transacaoId, parcelaId })
+    confirmar.mutate({ transacaoId, parcelaId, encargos })
   }
 
   const transacoes = useMemo(() => {
@@ -672,7 +747,7 @@ function TabConciliar() {
 
           <div className="flex-1 bg-white border rounded-xl p-4 overflow-y-auto">
             {txAtual ? (
-              <PainelSugestoes tx={txAtual} onConfirmar={handleConfirmar} confirmando={confirmando} />
+              <PainelSugestoes key={txAtual.id} tx={txAtual} onConfirmar={handleConfirmar} confirmando={confirmando} />
             ) : (
               <div className="h-full flex items-center justify-center text-gray-400">
                 <div className="text-center">

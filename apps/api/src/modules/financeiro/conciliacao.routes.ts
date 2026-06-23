@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { prisma } from '@erp/database'
 import { requirePerfil } from '../../plugins/auth.plugin.js'
+import { calcularSaldoBaixa, statusTituloPorParcelas, montarLinhasEncargo, somaEncargos } from './baixa.js'
 import { z } from 'zod'
 
 const ConfirmarSchema = z.object({
@@ -8,7 +9,21 @@ const ConfirmarSchema = z.object({
   parcelaId: z.string().uuid(),
   dataBaixa: z.string().optional(),
   valorPago: z.number().positive().optional(),
+  // Encargos embutidos no valor do banco, rateados para contas de DRE configuradas
+  tarifa: z.number().min(0).optional(),
+  juros: z.number().min(0).optional(),
+  multa: z.number().min(0).optional(),
 })
+
+const EstornarSchema = z.object({
+  transacaoId: z.string().uuid(),
+})
+
+const LABEL_CONTA: Record<string, string> = {
+  CONTA_TARIFA_BANCARIA: 'Tarifa bancária',
+  CONTA_JUROS_PAGOS: 'Juros/multa pagos',
+  CONTA_JUROS_RECEBIDOS: 'Juros/multa recebidos',
+}
 
 // ── Score: máx 200pts ─────────────────────────────────────────────────────────
 // Valor  (0–100): coincidência exata → 100, ±2% → 70, ±10% → 30
@@ -70,12 +85,18 @@ export async function conciliacaoRoutes(app: FastifyInstance) {
     const conta = await prisma.contaBancaria.findUnique({ where: { id: contaBancariaId } })
     if (!conta) return reply.code(404).send({ error: 'Conta não encontrada.' })
 
-    // Só transações OFX reais: sem vínculo com parcela + não criadas pelo sistema
+    // Só transações OFX reais ainda não resolvidas: importadas do extrato com fonte
+    // NULL (PENDENTE) ou sugestão automática (REGRA/HISTORICO). Exclui as criadas/
+    // resolvidas pelo sistema (TITULO, TRANSFERENCIA, AJUSTE, MANUAL, CONCILIACAO).
+    // O OR com `null` é necessário: NOT IN / notIn descartam linhas NULL em SQL.
     const transacoes = await prisma.transacaoFinanceira.findMany({
       where: {
         contaBancariaId,
         parcelaFinanceiraId: null,
-        NOT: { fonteClassificacao: { in: ['TITULO', 'MANUAL'] } },
+        OR: [
+          { fonteClassificacao: null },
+          { fonteClassificacao: { in: ['REGRA', 'HISTORICO'] } },
+        ],
         ...(dataInicio || dataFim
           ? { data: { ...(dataInicio && { gte: new Date(dataInicio) }), ...(dataFim && { lte: new Date(dataFim) }) } }
           : {}),
@@ -177,7 +198,7 @@ export async function conciliacaoRoutes(app: FastifyInstance) {
   // ── Confirmar conciliação ─────────────────────────────────────────────────
 
   app.post('/confirmar', async (request, reply) => {
-    const { transacaoId, parcelaId, dataBaixa, valorPago } = ConfirmarSchema.parse(request.body)
+    const { transacaoId, parcelaId, dataBaixa, valorPago, tarifa, juros, multa } = ConfirmarSchema.parse(request.body)
 
     const [tx, parcela] = await Promise.all([
       prisma.transacaoFinanceira.findUnique({ where: { id: transacaoId } }),
@@ -192,18 +213,47 @@ export async function conciliacaoRoutes(app: FastifyInstance) {
     if (tx.parcelaFinanceiraId) return reply.code(409).send({ error: 'Transação já conciliada com outra parcela.' })
     if (parcela.status !== 'ABERTO') return reply.code(409).send({ error: 'Parcela já foi quitada ou cancelada.' })
 
+    const tipoTitulo = parcela.titulo.tipo as 'PAGAR' | 'RECEBER'
     const tipoEsperado = tx.tipo === 'DEBITO' ? 'PAGAR' : 'RECEBER'
-    if (parcela.titulo.tipo !== tipoEsperado) {
+    if (tipoTitulo !== tipoEsperado) {
       return reply.code(400).send({
         error: `Tipo incompatível: débito deve ser conciliado com título a Pagar, crédito com título a Receber.`,
       })
     }
 
+    // Encargos embutidos no valor do banco → rateados para contas de DRE
+    const linhasEncargo = montarLinhasEncargo(tipoTitulo, { tarifa, juros, multa })
+    const totalEncargos = somaEncargos(linhasEncargo)
+    const bankTotal = Number(tx.valor)
+    if (totalEncargos >= bankTotal) {
+      return reply.code(400).send({ error: 'Os encargos não podem ser maiores ou iguais ao valor da transação.' })
+    }
+
+    // Resolve as contas configuradas para os encargos informados
+    const contasEncargo = new Map<string, string>()
+    if (linhasEncargo.length > 0) {
+      const chaves = [...new Set(linhasEncargo.map(l => l.chaveConta))]
+      const cfgs = await prisma.configuracao.findMany({ where: { chave: { in: chaves } } })
+      for (const c of cfgs) if (c.valor) contasEncargo.set(c.chave, c.valor)
+      const faltando = chaves.filter(k => !contasEncargo.has(k))
+      if (faltando.length > 0) {
+        return reply.code(400).send({
+          error: `Conta de DRE não configurada para: ${faltando.map(k => LABEL_CONTA[k] ?? k).join(', ')}. Defina em Configurações > Financeiro.`,
+        })
+      }
+    }
+
     const dataBaixaFinal = dataBaixa ? new Date(dataBaixa) : new Date(tx.data)
-    const valorPagoFinal = valorPago ?? Number(tx.valor)
+    // Principal aplicado ao título = valor do banco menos os encargos
+    const principalBanco = Number((bankTotal - totalEncargos).toFixed(2))
+    const valorPagoFinal = valorPago ?? principalBanco
+
+    // Baixa parcial: se o principal é menor que a parcela, quita o pago e gera
+    // uma nova parcela com o saldo restante (mesmo padrão da baixa de título).
+    const { restante, isParcial } = calcularSaldoBaixa(Number(parcela.valor), valorPagoFinal)
 
     await prisma.$transaction(async (t) => {
-      // Baixa a parcela
+      // Quita a parcela conciliada (total ou parcial)
       await t.parcelaFinanceira.update({
         where: { id: parcelaId },
         data: {
@@ -214,7 +264,26 @@ export async function conciliacaoRoutes(app: FastifyInstance) {
         },
       })
 
-      // Vincula transação à parcela e marca como revisada
+      // Gera a parcela do saldo restante quando a baixa foi parcial
+      if (isParcial) {
+        const { _max } = await t.parcelaFinanceira.aggregate({
+          where: { tituloId: parcela.tituloId },
+          _max: { numero: true },
+        })
+        await t.parcelaFinanceira.create({
+          data: {
+            tituloId: parcela.tituloId,
+            numero: (_max.numero ?? 0) + 1,
+            valor: restante,
+            vencimento: parcela.vencimento,
+            parcelaOrigemId: parcelaId,
+          },
+        })
+      }
+
+      // Atualiza a transação conciliada. Com encargos, ela vira o "principal"
+      // (valor reduzido) e o restante é rateado nas linhas de encargo abaixo,
+      // de forma que a soma continue igual ao valor original do banco.
       await t.transacaoFinanceira.update({
         where: { id: transacaoId },
         data: {
@@ -222,18 +291,126 @@ export async function conciliacaoRoutes(app: FastifyInstance) {
           status: 'REVISADO',
           fonteClassificacao: 'CONCILIACAO',
           confiancaClassificacao: 1.0,
+          ...(totalEncargos > 0 ? { valor: principalBanco } : {}),
         },
       })
+
+      // Cria as linhas de encargo (rateio) para o DRE
+      for (const linha of linhasEncargo) {
+        await t.transacaoFinanceira.create({
+          data: {
+            contaBancariaId: tx.contaBancariaId,
+            fitid: `CONC-ENC-${transacaoId}-${linha.chaveConta}`,
+            data: tx.data,
+            valor: linha.valor,
+            tipo: tx.tipo,
+            descricao: `${LABEL_CONTA[linha.chaveConta] ?? 'Encargo'} — conciliação`,
+            nomeOriginal: tx.nomeOriginal,
+            contaFinanceiraId: contasEncargo.get(linha.chaveConta)!,
+            // Fonte própria: entra no DRE (status REVISADO + conta), mas não é tratada
+            // como transação conciliável nem oferece "estornar" isolado na listagem.
+            fonteClassificacao: 'CONCILIACAO_ENCARGO',
+            confiancaClassificacao: 1.0,
+            status: 'REVISADO',
+          },
+        })
+      }
 
       // Atualiza status do título
       const todasParcelas = await t.parcelaFinanceira.findMany({
         where: { tituloId: parcela.tituloId },
         select: { status: true },
       })
-      const abertas = todasParcelas.filter(p => p.status === 'ABERTO').length
-      const quitadas = todasParcelas.filter(p => p.status === 'QUITADO').length
-      const novoStatus = abertas === 0 && quitadas > 0 ? 'QUITADO'
-        : quitadas > 0 ? 'PARCIAL' : 'ABERTO'
+      const novoStatus = statusTituloPorParcelas(todasParcelas.map(p => p.status))
+      await t.tituloFinanceiro.update({ where: { id: parcela.tituloId }, data: { status: novoStatus } })
+    })
+
+    return { ok: true, parcial: isParcial, saldoResidual: isParcial ? restante : 0, principal: principalBanco, encargos: totalEncargos }
+  })
+
+  // ── Estornar conciliação ──────────────────────────────────────────────────
+
+  app.post('/estornar', async (request, reply) => {
+    const { transacaoId } = EstornarSchema.parse(request.body)
+
+    const tx = await prisma.transacaoFinanceira.findUnique({
+      where: { id: transacaoId },
+      select: { id: true, parcelaFinanceiraId: true, fonteClassificacao: true, valor: true, contaBancariaId: true },
+    })
+    if (!tx) return reply.code(404).send({ error: 'Transação não encontrada.' })
+    if (!tx.parcelaFinanceiraId || tx.fonteClassificacao !== 'CONCILIACAO') {
+      return reply.code(409).send({ error: 'Transação não está conciliada.' })
+    }
+
+    // Linhas de encargo geradas nesta conciliação (rateio)
+    const encargos = await prisma.transacaoFinanceira.findMany({
+      where: { contaBancariaId: tx.contaBancariaId, fitid: { startsWith: `CONC-ENC-${transacaoId}-` } },
+      select: { id: true, valor: true },
+    })
+    const totalEncargos = encargos.reduce((s, e) => s + Number(e.valor), 0)
+
+    const parcelaId = tx.parcelaFinanceiraId
+    const parcela = await prisma.parcelaFinanceira.findUnique({
+      where: { id: parcelaId },
+      select: { id: true, tituloId: true },
+    })
+    if (!parcela) return reply.code(404).send({ error: 'Parcela conciliada não encontrada.' })
+
+    // Saldo residual gerado nesta conciliação parcial (se houve)
+    const residuais = await prisma.parcelaFinanceira.findMany({
+      where: { parcelaOrigemId: parcelaId },
+      select: { id: true, status: true },
+    })
+    if (residuais.some(r => r.status !== 'ABERTO')) {
+      return reply.code(409).send({
+        error: 'O saldo restante desta conciliação já foi baixado ou conciliado. Estorne-o antes.',
+      })
+    }
+
+    await prisma.$transaction(async (t) => {
+      // Remove a(s) parcela(s) de saldo geradas na baixa parcial
+      if (residuais.length > 0) {
+        await t.parcelaFinanceira.deleteMany({ where: { parcelaOrigemId: parcelaId } })
+      }
+
+      // Remove as linhas de encargo e devolve seus valores ao principal
+      if (encargos.length > 0) {
+        await t.transacaoFinanceira.deleteMany({ where: { id: { in: encargos.map(e => e.id) } } })
+      }
+
+      // Restaura a parcela conciliada para ABERTO
+      await t.parcelaFinanceira.update({
+        where: { id: parcelaId },
+        data: {
+          status: 'ABERTO',
+          dataBaixa: null,
+          valorPago: null,
+          juros: null,
+          multa: null,
+          taxas: null,
+          contaBancariaId: null,
+        },
+      })
+
+      // Desvincula a transação, restaura o valor original (principal + encargos)
+      // e devolve ao estado pendente para nova conciliação
+      await t.transacaoFinanceira.update({
+        where: { id: transacaoId },
+        data: {
+          parcelaFinanceiraId: null,
+          fonteClassificacao: null,
+          confiancaClassificacao: null,
+          status: 'PENDENTE',
+          valor: Number((Number(tx.valor) + totalEncargos).toFixed(2)),
+        },
+      })
+
+      // Recalcula status do título
+      const todasParcelas = await t.parcelaFinanceira.findMany({
+        where: { tituloId: parcela.tituloId },
+        select: { status: true },
+      })
+      const novoStatus = statusTituloPorParcelas(todasParcelas.map(p => p.status))
       await t.tituloFinanceiro.update({ where: { id: parcela.tituloId }, data: { status: novoStatus } })
     })
 

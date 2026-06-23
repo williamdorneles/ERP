@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { CheckCircle, ChevronLeft, ChevronRight, Search, X } from 'lucide-react'
+import { CheckCircle, ChevronLeft, ChevronRight, RotateCcw, Search, X } from 'lucide-react'
 import { api } from '../../lib/api'
 import { Select } from '../../components/ui/FormField'
 import { Button } from '../../components/ui/Button'
@@ -195,6 +195,20 @@ export function TransacoesPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['transacoes'] }),
   })
 
+  const estornarConciliacaoMutation = useMutation({
+    mutationFn: (transacaoId: string) => api.post('/conciliacao/estornar', { transacaoId }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['transacoes'] })
+      qc.invalidateQueries({ queryKey: ['conciliacao'] })
+      qc.invalidateQueries({ queryKey: ['titulos'] })
+      qc.invalidateQueries({ queryKey: ['titulos-resumo'] })
+    },
+    onError: (err: unknown) => {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
+      alert(msg ?? 'Falha ao estornar a conciliação.')
+    },
+  })
+
   const reclassificarMutation = useMutation({
     mutationFn: () => api.post('/financeiro/transacoes/reclassificar-pendentes'),
     onSuccess: (res) => {
@@ -381,6 +395,19 @@ export function TransacoesPage() {
                         )}
                       >
                         <Search size={14} />
+                      </button>
+                    )}
+                    {tx.fonteClassificacao === 'CONCILIACAO' && (
+                      <button
+                        onClick={() => {
+                          if (confirm('Estornar a conciliação desta transação? A parcela voltará a ABERTO e a transação ficará pendente.')) {
+                            estornarConciliacaoMutation.mutate(tx.id)
+                          }
+                        }}
+                        title="Estornar conciliação"
+                        className="p-1.5 rounded-lg hover:bg-amber-50 text-amber-600 transition"
+                      >
+                        <RotateCcw size={14} />
                       </button>
                     )}
                   </div>
