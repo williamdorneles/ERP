@@ -20,16 +20,27 @@ async function main() {
     },
   })
 
+  // Categorias (model dinâmico — substitui o enum antigo). Idempotente.
+  const nomesCategorias = [
+    'Farinha', 'Gordura', 'Açúcar', 'Fermento', 'Laticínios', 'Ovos', 'Embalagem',
+    'Pão', 'Bolo', 'Doce', 'Salgado', 'Massa', 'Recheio', 'Outros',
+  ]
+  for (const nome of nomesCategorias) {
+    await prisma.categoria.upsert({ where: { nome }, update: {}, create: { nome } })
+  }
+  const categorias = await prisma.categoria.findMany({ select: { id: true, nome: true } })
+  const catId = (nome: string) => categorias.find(c => c.nome === nome)?.id ?? null
+
   await prisma.produto.createMany({
     skipDuplicates: true,
     data: [
-      { codigo: '000001', nome: 'Farinha de Trigo Especial', tipo: 'INSUMO', categoria: 'FARINHA', unidadeMedida: 'KG', custoUnitario: 3.5, estoqueMinimo: 50 },
-      { codigo: '000002', nome: 'Açúcar Cristal', tipo: 'INSUMO', categoria: 'ACUCAR', unidadeMedida: 'KG', custoUnitario: 2.8, estoqueMinimo: 20 },
-      { codigo: '000003', nome: 'Fermento Biológico Seco', tipo: 'INSUMO', categoria: 'FERMENTO', unidadeMedida: 'KG', custoUnitario: 25.0, estoqueMinimo: 5 },
-      { codigo: '000004', nome: 'Sal Refinado', tipo: 'INSUMO', categoria: 'OUTROS', unidadeMedida: 'KG', custoUnitario: 1.2, estoqueMinimo: 10 },
-      { codigo: '000005', nome: 'Manteiga sem Sal', tipo: 'INSUMO', categoria: 'GORDURA', unidadeMedida: 'KG', custoUnitario: 32.0, estoqueMinimo: 5 },
-      { codigo: '000006', nome: 'Ovo Tipo A', tipo: 'INSUMO', categoria: 'OVOS', unidadeMedida: 'UN', custoUnitario: 0.65, estoqueMinimo: 120 },
-      { codigo: '000007', nome: 'Leite Integral', tipo: 'INSUMO', categoria: 'LATICINIOS', unidadeMedida: 'L', custoUnitario: 4.2, estoqueMinimo: 20 },
+      { codigo: '000001', nome: 'Farinha de Trigo Especial', tipo: 'INSUMO', categoriaId: catId('Farinha'), unidadeMedida: 'KG', custoUnitario: 3.5, estoqueMinimo: 50 },
+      { codigo: '000002', nome: 'Açúcar Cristal', tipo: 'INSUMO', categoriaId: catId('Açúcar'), unidadeMedida: 'KG', custoUnitario: 2.8, estoqueMinimo: 20 },
+      { codigo: '000003', nome: 'Fermento Biológico Seco', tipo: 'INSUMO', categoriaId: catId('Fermento'), unidadeMedida: 'KG', custoUnitario: 25.0, estoqueMinimo: 5 },
+      { codigo: '000004', nome: 'Sal Refinado', tipo: 'INSUMO', categoriaId: catId('Outros'), unidadeMedida: 'KG', custoUnitario: 1.2, estoqueMinimo: 10 },
+      { codigo: '000005', nome: 'Manteiga sem Sal', tipo: 'INSUMO', categoriaId: catId('Gordura'), unidadeMedida: 'KG', custoUnitario: 32.0, estoqueMinimo: 5 },
+      { codigo: '000006', nome: 'Ovo Tipo A', tipo: 'INSUMO', categoriaId: catId('Ovos'), unidadeMedida: 'UN', custoUnitario: 0.65, estoqueMinimo: 120 },
+      { codigo: '000007', nome: 'Leite Integral', tipo: 'INSUMO', categoriaId: catId('Laticínios'), unidadeMedida: 'L', custoUnitario: 4.2, estoqueMinimo: 20 },
     ],
   })
 
