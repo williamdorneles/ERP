@@ -8,7 +8,6 @@ import { PessoasPage } from './pages/cadastros/PessoasPage'
 import { CategoriasPage } from './pages/cadastros/CategoriasPage'
 import { PosicaoEstoquePage } from './pages/estoque/PosicaoEstoquePage'
 import { NfEntradaPage } from './pages/estoque/NfEntradaPage'
-import { FichasTecnicasPage } from './pages/producao/FichasTecnicasPage'
 import { OrdensProducaoPage } from './pages/producao/OrdensProducaoPage'
 import { PedidosVendaPage } from './pages/vendas/PedidosVendaPage'
 import { NotasFiscaisPage } from './pages/fiscal/NotasFiscaisPage'
@@ -38,7 +37,7 @@ export default function App() {
           <Route path="estoque/posicao" element={<PosicaoEstoquePage />} />
           <Route path="estoque/nf-entrada" element={<NfEntradaPage />} />
           <Route path="estoque/movimentacoes" element={<Navigate to="/estoque/posicao" replace />} />
-          <Route path="producao/fichas" element={<FichasTecnicasPage />} />
+          <Route path="producao/fichas" element={<Navigate to="/producao/ordens" replace />} />
           <Route path="producao/ordens" element={<OrdensProducaoPage />} />
           <Route path="vendas/pedidos" element={<PedidosVendaPage />} />
           <Route path="fiscal/nfe" element={<NotasFiscaisPage />} />

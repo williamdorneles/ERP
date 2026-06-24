@@ -20,8 +20,6 @@ async function main() {
   await del('movimentações estoque', () => prisma.movimentacaoEstoque.deleteMany())
   await del('apontamentos',          () => prisma.apontamentoProducao.deleteMany())
   await del('ordens de produção',    () => prisma.ordemProducao.deleteMany())
-  await del('ingredientes fichas',   () => prisma.ingredienteFicha.deleteMany())
-  await del('fichas técnicas',       () => prisma.fichaTecnica.deleteMany())
   await del('produtos',              () => prisma.produto.deleteMany())
   await del('clientes/fornecedores', () => prisma.pessoa.deleteMany())
 

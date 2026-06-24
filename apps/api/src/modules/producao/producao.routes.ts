@@ -1,129 +1,40 @@
 import type { FastifyInstance } from 'fastify'
 import { prisma } from '@erp/database'
+import { z } from 'zod'
 import { requirePerfil } from '../../plugins/auth.plugin.js'
+import { permiteEstoqueNegativo } from '../estoque/config-estoque.js'
+
+const TurnoEnum = z.enum(['MANHA', 'TARDE', 'NOITE'])
+
+const CriarOrdemSchema = z.object({
+  produtoId: z.string().uuid(),
+  quantidade: z.number().positive(),
+  turno: TurnoEnum,
+  dataProducao: z.string().min(1),
+  responsavelId: z.string().uuid().optional(),
+  observacao: z.string().max(500).optional(),
+})
+
+const AtualizarOrdemSchema = z.object({
+  produtoId: z.string().uuid(),
+  quantidade: z.number().positive(),
+  turno: TurnoEnum,
+  dataProducao: z.string().min(1),
+  observacao: z.string().max(500).optional(),
+})
+
+const ApontarSchema = z.object({
+  quantidade: z.number().positive(),
+  observacao: z.string().max(500).optional(),
+  // Consumo real por componente (sobrescreve o teórico do BOM) — variância de produção
+  consumos: z.array(z.object({
+    componenteId: z.string().uuid(),
+    quantidade: z.number().min(0),
+  })).optional(),
+})
 
 export async function producaoRoutes(app: FastifyInstance) {
   app.addHook('preHandler', requirePerfil('ADMIN', 'GERENTE', 'PRODUCAO'))
-
-  // Fichas Técnicas
-  app.get('/fichas', async (request) => {
-    const { categoriaId, mostrarInativos, produtoId } = request.query as { categoriaId?: string; mostrarInativos?: string; produtoId?: string }
-    return prisma.fichaTecnica.findMany({
-      where: {
-        ...(mostrarInativos !== 'true' && { ativo: true }),
-        ...(categoriaId && { categoriaId }),
-        ...(produtoId && { produtoId }),
-      },
-      include: {
-        categoria: { select: { id: true, nome: true } },
-        produto: { select: { id: true, nome: true, codigo: true } },
-        ingredientes: {
-          include: { produto: { select: { nome: true, codigo: true, unidadeMedida: true, custoUnitario: true } } },
-        },
-      },
-      orderBy: { codigo: 'asc' },
-    })
-  })
-
-  app.get('/fichas/:id', async (request, reply) => {
-    const { id } = request.params as { id: string }
-    const ficha = await prisma.fichaTecnica.findUnique({
-      where: { id },
-      include: {
-        ingredientes: {
-          include: { produto: true },
-        },
-      },
-    })
-    if (!ficha) return reply.code(404).send({ error: 'Ficha técnica não encontrada' })
-    return ficha
-  })
-
-  app.post('/fichas', async (request, reply) => {
-    const { ingredientes, ...fichaData } = request.body as {
-      produtoId: string; categoriaId?: string
-      rendimento: number; unidadeRendimento: string
-      tempoPreparo?: number; tempoFermentacao?: number; temperaturaForno?: number
-      instrucoes?: string
-      ingredientes: Array<{ produtoId: string; quantidade: number; unidadeMedida: string; observacao?: string }>
-    }
-
-    const [{ nextval }] = await prisma.$queryRaw<[{ nextval: bigint }]>`SELECT nextval('ficha_tecnica_codigo_seq')`
-    const codigo = String(Number(nextval)).padStart(6, '0')
-
-    const ficha = await prisma.fichaTecnica.create({
-      data: {
-        ...(fichaData as never),
-        codigo,
-        ingredientes: { create: ingredientes },
-      },
-      include: { ingredientes: { include: { produto: true } } },
-    })
-
-    return reply.code(201).send(ficha)
-  })
-
-  app.put('/fichas/:id', async (request, reply) => {
-    const { id } = request.params as { id: string }
-    const { ingredientes, ...fichaData } = request.body as {
-      produtoId: string; categoriaId?: string
-      rendimento: number; unidadeRendimento: string
-      tempoPreparo?: number; tempoFermentacao?: number; temperaturaForno?: number
-      instrucoes?: string
-      ingredientes: Array<{ produtoId: string; quantidade: number; unidadeMedida: string; observacao?: string }>
-    }
-
-    const ficha = await prisma.$transaction(async (tx) => {
-      await tx.ingredienteFicha.deleteMany({ where: { fichaTecnicaId: id } })
-      return tx.fichaTecnica.update({
-        where: { id },
-        data: {
-          ...(fichaData as never),
-          ingredientes: { create: ingredientes },
-        },
-        include: { ingredientes: { include: { produto: true } } },
-      })
-    })
-
-    return ficha
-  })
-
-  app.patch('/fichas/:id/toggle-ativo', async (request, reply) => {
-    const { id } = request.params as { id: string }
-    const atual = await prisma.fichaTecnica.findUnique({ where: { id }, select: { ativo: true } })
-    if (!atual) return reply.code(404).send({ error: 'Ficha não encontrada' })
-    return prisma.fichaTecnica.update({ where: { id }, data: { ativo: !atual.ativo } })
-  })
-
-  // Explosão de receita: calcula a necessidade de MP para N unidades (via BOM)
-  app.get('/fichas/:id/explosao', async (request, reply) => {
-    const { id } = request.params as { id: string }
-    const { quantidade } = request.query as { quantidade?: string }
-    const qtd = Number(quantidade ?? 1)
-
-    const ficha = await prisma.fichaTecnica.findUnique({
-      where: { id },
-      include: {
-        produto: { select: { nome: true } },
-        ingredientes: {
-          include: { produto: { select: { nome: true, estoqueAtual: true, unidadeMedida: true } } },
-        },
-      },
-    })
-
-    if (!ficha) return reply.code(404).send({ error: 'Ficha não encontrada' })
-
-    const fator = qtd / Number(ficha.rendimento)
-    const explosao = ficha.ingredientes.map(ing => ({
-      insumo: ing.produto.nome,
-      necessario: Number(ing.quantidade) * fator,
-      unidade: ing.unidadeMedida,
-      disponivel: Number(ing.produto.estoqueAtual),
-      suficiente: Number(ing.produto.estoqueAtual) >= Number(ing.quantidade) * fator,
-    }))
-
-    return { ficha: ficha.produto?.nome ?? ficha.codigo, quantidade: qtd, explosao }
-  })
 
   // Explosão via BOM do produto
   app.get('/bom/:produtoId/explosao', async (request, reply) => {
@@ -148,6 +59,7 @@ export async function producaoRoutes(app: FastifyInstance) {
     const explosao = bom.itens.map(item => {
       const necessario = Number(item.quantidade) * fator * (1 + Number(item.percPerda) / 100)
       return {
+        componenteId: item.componenteId,
         insumo: item.componente.nome,
         necessario,
         unidade: item.unidade,
@@ -187,10 +99,7 @@ export async function producaoRoutes(app: FastifyInstance) {
   })
 
   app.post('/ordens', async (request, reply) => {
-    const data = request.body as {
-      produtoId: string; quantidade: number; turno: string
-      dataProducao: string; responsavelId?: string; observacao?: string
-    }
+    const data = CriarOrdemSchema.parse(request.body)
 
     const bom = await prisma.produtoBom.findUnique({ where: { produtoId: data.produtoId } })
     if (!bom) return reply.code(400).send({ error: 'Produto não possui composição BOM cadastrada.' })
@@ -200,7 +109,7 @@ export async function producaoRoutes(app: FastifyInstance) {
     const { dataProducao, ...rest } = data
 
     const ordem = await prisma.ordemProducao.create({
-      data: { ...rest as never, dataProducao: new Date(dataProducao), numero, status: 'PLANEJADA' },
+      data: { ...rest, dataProducao: new Date(dataProducao), numero, status: 'PLANEJADA' } as never,
       include: { produto: { select: { nome: true } } },
     })
 
@@ -209,10 +118,7 @@ export async function producaoRoutes(app: FastifyInstance) {
 
   app.put('/ordens/:id', async (request, reply) => {
     const { id } = request.params as { id: string }
-    const data = request.body as {
-      produtoId: string; quantidade: number; turno: string
-      dataProducao: string; observacao?: string
-    }
+    const data = AtualizarOrdemSchema.parse(request.body)
 
     const atual = await prisma.ordemProducao.findUnique({ where: { id }, select: { status: true } })
     if (!atual || atual.status !== 'PLANEJADA') {
@@ -225,7 +131,7 @@ export async function producaoRoutes(app: FastifyInstance) {
     const { dataProducao, ...rest } = data
     const ordem = await prisma.ordemProducao.update({
       where: { id },
-      data: { ...rest as never, dataProducao: new Date(dataProducao) },
+      data: { ...rest, dataProducao: new Date(dataProducao) } as never,
       include: { produto: { select: { nome: true } } },
     })
 
@@ -261,7 +167,7 @@ export async function producaoRoutes(app: FastifyInstance) {
   // Registrar apontamento de produção
   app.post('/ordens/:id/apontar', async (request, reply) => {
     const { id } = request.params as { id: string }
-    const { quantidade, observacao } = request.body as { quantidade: number; observacao?: string }
+    const { quantidade, observacao, consumos } = ApontarSchema.parse(request.body)
 
     const ordem = await prisma.ordemProducao.findUnique({
       where: { id },
@@ -289,52 +195,99 @@ export async function producaoRoutes(app: FastifyInstance) {
     const concluida = novoTotal >= Number(ordem.quantidade) - 0.001
     const obs = `Apontamento OP ${ordem.numero}${observacao ? ' — ' + observacao : ''}`
 
-    // Custos atuais para registrar nas movimentações (rastreabilidade no extrato).
-    // Não altera o custo dos produtos — apenas grava o snapshot na movimentação.
+    // Custos e saldos atuais. O custo vai como snapshot na movimentação (rastreio);
+    // o saldo é usado para validar estoque negativo dos componentes.
     const idsCusto = [ordem.produtoId, ...bom.itens.map(i => i.componenteId)]
     const custosProd = await prisma.produto.findMany({
       where: { id: { in: idsCusto } },
-      select: { id: true, custoUnitario: true },
+      select: { id: true, nome: true, custoUnitario: true, estoqueAtual: true },
     })
     const custoDe = (pid: string) => +Number(custosProd.find(c => c.id === pid)?.custoUnitario ?? 0).toFixed(4)
 
+    // Plano de consumo: teórico (BOM × fator × perda) ou consumo real informado (#4)
+    const overrideDe = new Map((consumos ?? []).map(c => [c.componenteId, c.quantidade]))
+    const plano = bom.itens.map(item => {
+      const teorico = +(Number(item.quantidade) * fator * (1 + Number(item.percPerda) / 100)).toFixed(4)
+      const consumo = overrideDe.has(item.componenteId) ? +Number(overrideDe.get(item.componenteId)).toFixed(4) : teorico
+      const comp = custosProd.find(c => c.id === item.componenteId)
+      return {
+        componenteId: item.componenteId,
+        nome: comp?.nome ?? item.componenteId,
+        consumo,
+        custo: custoDe(item.componenteId),
+        saldo: Number(comp?.estoqueAtual ?? 0),
+      }
+    })
+
+    // Bloqueia o apontamento se faltar estoque de algum componente (config NAO permite negativo)
+    if (!(await permiteEstoqueNegativo())) {
+      const faltantes = plano
+        .filter(p => p.saldo - p.consumo < -0.0001)
+        .map(p => `${p.nome} (precisa ${p.consumo.toFixed(3)}, tem ${p.saldo.toFixed(3)})`)
+      if (faltantes.length > 0) {
+        return reply.code(400).send({
+          error: `Estoque insuficiente para: ${faltantes.join('; ')}. Habilite "estoque negativo" em Configurações > Estoque para permitir.`,
+        })
+      }
+    }
+
+    // Custo real do lote (#2-A): soma do custo dos componentes efetivamente consumidos.
+    // Gravado como snapshot na entrada do acabado; NÃO altera o custoUnitario (padrão do BOM).
+    const custoRealLote = +plano.reduce((s, p) => s + p.consumo * p.custo, 0).toFixed(4)
+    const custoRealUnit = quantidade > 0 ? +(custoRealLote / quantidade).toFixed(4) : custoDe(ordem.produtoId)
+    const custoPadraoUnit = custoDe(ordem.produtoId)
+
     const apontamento = await prisma.$transaction(async (tx) => {
-      // Cria o registro do apontamento
+      // Cria o registro do apontamento (com o custo real do lote)
       const apt = await tx.apontamentoProducao.create({
-        data: { ordemProducaoId: id, quantidade, observacao },
+        data: { ordemProducaoId: id, quantidade, custoReal: custoRealLote, observacao },
       })
 
-      // Entrada do produto acabado vinculada ao apontamento (custo = custo do BOM)
+      // Entrada do produto acabado (custo = custo real do lote consumido)
       await tx.movimentacaoEstoque.create({
-        data: { produtoId: ordem.produtoId, apontamentoId: apt.id, tipo: 'ENTRADA', quantidade, custoUnitario: custoDe(ordem.produtoId), observacao: obs },
+        data: { produtoId: ordem.produtoId, apontamentoId: apt.id, tipo: 'ENTRADA', quantidade, custoUnitario: custoRealUnit, observacao: obs },
       })
       await tx.produto.update({
         where: { id: ordem.produtoId },
         data: { estoqueAtual: { increment: quantidade } },
       })
 
-      // Saída proporcional de cada componente BOM (com percentual de perda)
-      for (const item of bom.itens) {
-        const consumo = Number(item.quantidade) * fator * (1 + Number(item.percPerda) / 100)
+      // Saída de cada componente (consumo real ou teórico), com custo snapshot
+      for (const p of plano) {
+        if (p.consumo <= 0) continue
         await tx.movimentacaoEstoque.create({
-          data: { produtoId: item.componenteId, apontamentoId: apt.id, tipo: 'SAIDA', quantidade: consumo, custoUnitario: custoDe(item.componenteId), observacao: obs },
+          data: { produtoId: p.componenteId, apontamentoId: apt.id, tipo: 'SAIDA', quantidade: p.consumo, custoUnitario: p.custo, observacao: obs },
         })
         await tx.produto.update({
-          where: { id: item.componenteId },
-          data: { estoqueAtual: { decrement: consumo } },
+          where: { id: p.componenteId },
+          data: { estoqueAtual: { decrement: p.consumo } },
         })
       }
 
-      // Atualiza OP
+      // Atualiza OP (quantidade + custo real acumulado do lote)
       await tx.ordemProducao.update({
         where: { id },
-        data: { quantidadeProduzida: novoTotal, status: concluida ? 'CONCLUIDA' : 'EM_PRODUCAO' },
+        data: {
+          quantidadeProduzida: novoTotal,
+          status: concluida ? 'CONCLUIDA' : 'EM_PRODUCAO',
+          custoRealTotal: { increment: custoRealLote },
+        },
       })
 
       return apt
     })
 
-    return reply.code(201).send({ apontamentoId: apontamento.id, concluida, quantidadeProduzida: novoTotal })
+    return reply.code(201).send({
+      apontamentoId: apontamento.id,
+      concluida,
+      quantidadeProduzida: novoTotal,
+      // Custo real do lote vs padrão do BOM (variância de produção)
+      custoRealLote,
+      custoRealUnit,
+      custoPadraoUnit,
+      custoPadraoLote: +(custoPadraoUnit * quantidade).toFixed(4),
+      variancia: +(custoRealLote - custoPadraoUnit * quantidade).toFixed(4),
+    })
   })
 
   // Listar apontamentos de uma ordem
@@ -400,10 +353,12 @@ export async function producaoRoutes(app: FastifyInstance) {
         include: { apontamentos: { where: { estornado: false } } },
       })
       const novoTotal = ordem.apontamentos.reduce((acc, a) => acc + Number(a.quantidade), 0)
+      const novoCustoReal = ordem.apontamentos.reduce((acc, a) => acc + Number(a.custoReal), 0)
       await tx.ordemProducao.update({
         where: { id: ordemId },
         data: {
           quantidadeProduzida: novoTotal,
+          custoRealTotal: +novoCustoReal.toFixed(4),
           status: ordem.status === 'CONCLUIDA' ? 'EM_PRODUCAO' : undefined,
         },
       })
@@ -450,7 +405,7 @@ async function estornarTodosApontamentos(ordemId: string, motivoCancelamento: st
     }
     await tx.ordemProducao.update({
       where: { id: ordemId },
-      data: { quantidadeProduzida: 0 },
+      data: { quantidadeProduzida: 0, custoRealTotal: 0 },
     })
   })
 }

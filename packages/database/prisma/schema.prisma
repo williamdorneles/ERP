@@ -101,7 +101,6 @@ model Categoria {
   atualizadoEm DateTime      @updatedAt
 
   produtos       Produto[]
-  fichasTecnicas FichaTecnica[]
 
   @@map("categorias")
 }
@@ -158,11 +157,9 @@ model Produto {
   criadoEm        DateTime    @default(now())
   atualizadoEm    DateTime    @updatedAt
 
-  fichaTecnica      FichaTecnica?
   bom               ProdutoBom?
   bomComponente     ProdutoBomItem[] @relation("BomComponente")
   movimentacoes     MovimentacaoEstoque[]
-  ingredientesFicha IngredienteFicha[]
   itensPedidoCompra ItemPedidoCompra[]
   itensPedidoVenda  ItemPedidoVenda[]
   ordensProducao    OrdemProducao[]
@@ -222,43 +219,6 @@ model MovimentacaoEstoque {
 // PRODUÇÃO
 // ─────────────────────────────────────────
 
-model FichaTecnica {
-  id               String        @id @default(uuid())
-  codigo           String        @unique @db.VarChar(20)
-  produtoId        String        @unique
-  categoriaId      String?
-  categoria        Categoria?    @relation(fields: [categoriaId], references: [id])
-  rendimento       Decimal       @db.Decimal(12, 3)
-  unidadeRendimento UnidadeMedida
-  tempoPreparo     Int?
-  tempoFermentacao Int?
-  temperaturaForno Int?
-  instrucoes       String?       @db.Text
-  ativo            Boolean       @default(true)
-  criadoEm        DateTime      @default(now())
-  atualizadoEm    DateTime      @updatedAt
-
-  produto        Produto?          @relation(fields: [produtoId], references: [id])
-  ingredientes   IngredienteFicha[]
-
-  @@map("fichas_tecnicas")
-}
-
-model IngredienteFicha {
-  id             String        @id @default(uuid())
-  fichaTecnicaId String
-  produtoId      String
-  quantidade     Decimal       @db.Decimal(12, 3)
-  unidadeMedida  UnidadeMedida
-  observacao     String?
-
-  fichaTecnica FichaTecnica @relation(fields: [fichaTecnicaId], references: [id])
-  produto      Produto      @relation(fields: [produtoId], references: [id])
-
-  @@unique([fichaTecnicaId, produtoId])
-  @@map("ingredientes_ficha")
-}
-
 // BOM — Bill of Materials (Composição do Produto)
 
 model ProdutoBom {
@@ -317,6 +277,7 @@ model OrdemProducao {
   dataProducao   DateTime
   responsavelId  String?
   observacao     String?
+  custoRealTotal Decimal     @default(0) @db.Decimal(15, 4)
   criadoEm      DateTime    @default(now())
   atualizadoEm  DateTime    @updatedAt
 
@@ -333,6 +294,7 @@ model ApontamentoProducao {
   id                String    @id @default(uuid())
   ordemProducaoId   String
   quantidade        Decimal   @db.Decimal(12, 3)
+  custoReal         Decimal   @default(0) @db.Decimal(15, 4)
   observacao        String?
   estornado         Boolean   @default(false)
   estornadoEm       DateTime?

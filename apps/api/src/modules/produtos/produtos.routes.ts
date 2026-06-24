@@ -62,7 +62,6 @@ export async function produtosRoutes(app: FastifyInstance) {
       where: { id },
       include: {
         categoria: { select: { id: true, nome: true } },
-        fichaTecnica: { select: { id: true } },
         bom: {
           include: {
             itens: {

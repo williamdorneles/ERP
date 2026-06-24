@@ -18,7 +18,7 @@ interface Categoria {
   nome: string
   ativo: boolean
   criadoEm: string
-  _count: { produtos: number; fichasTecnicas: number }
+  _count: { produtos: number }
 }
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
@@ -217,7 +217,6 @@ export function CategoriasPage() {
               <tr className="border-b border-gray-100 text-left text-xs text-gray-500 uppercase tracking-wide">
                 <th className="px-4 py-3">Nome</th>
                 <th className="px-4 py-3">Produtos</th>
-                <th className="px-4 py-3">Fichas Técnicas</th>
                 <th className="px-4 py-3">Status</th>
                 <th className="px-4 py-3 text-center">Ações</th>
               </tr>
@@ -239,11 +238,6 @@ export function CategoriasPage() {
                   <td className="px-4 py-3 text-gray-500 tabular-nums">
                     {c._count.produtos > 0
                       ? <span className="text-gray-700">{c._count.produtos}</span>
-                      : <span className="text-gray-300">—</span>}
-                  </td>
-                  <td className="px-4 py-3 text-gray-500 tabular-nums">
-                    {c._count.fichasTecnicas > 0
-                      ? <span className="text-gray-700">{c._count.fichasTecnicas}</span>
                       : <span className="text-gray-300">—</span>}
                   </td>
                   <td className="px-4 py-3">
@@ -314,8 +308,8 @@ export function CategoriasPage() {
         open={!!confirmExcluir}
         title="Excluir Categoria"
         message={
-          confirmExcluir && (confirmExcluir._count.produtos + confirmExcluir._count.fichasTecnicas) > 0
-            ? `Deseja excluir "${confirmExcluir.nome}"? Os ${confirmExcluir._count.produtos} produto(s) e ${confirmExcluir._count.fichasTecnicas} ficha(s) técnica(s) vinculados ficarão sem categoria.`
+          confirmExcluir && confirmExcluir._count.produtos > 0
+            ? `Deseja excluir "${confirmExcluir.nome}"? Os ${confirmExcluir._count.produtos} produto(s) vinculados ficarão sem categoria.`
             : `Deseja excluir permanentemente "${confirmExcluir?.nome}"? Esta ação não pode ser desfeita.`
         }
         confirmLabel="Excluir"

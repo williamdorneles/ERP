@@ -40,7 +40,6 @@ const navItems: NavItem[] = [
     label: 'Produção',
     icon: <ChefHat size={18} />,
     children: [
-      { label: 'Fichas Técnicas', href: '/producao/fichas' },
       { label: 'Ordens de Produção', href: '/producao/ordens' },
     ],
   },

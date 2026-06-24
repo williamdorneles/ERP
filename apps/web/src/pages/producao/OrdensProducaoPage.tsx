@@ -16,6 +16,7 @@ interface OrdemProducao {
   id: string; numero: string; status: string; turno: string
   quantidade: number; quantidadeProduzida: number; dataProducao: string
   produtoId: string; observacao?: string
+  custoRealTotal?: number
   produto: { nome: string }
   responsavel?: { nome: string }
 }
@@ -28,6 +29,11 @@ interface Apontamento {
   id: string; quantidade: number; observacao?: string
   estornado: boolean; estornadoEm?: string; observacaoEstorno?: string
   criadoEm: string; movimentacoes: MovimentacaoApt[]
+}
+
+interface ExplosaoItem {
+  componenteId: string; insumo: string; necessario: number
+  unidade: string; disponivel: number; suficiente: boolean
 }
 
 const statusCor: Record<string, string> = {
@@ -70,19 +76,40 @@ function ApontamentoForm({ ordem, onSuccess, onCancel }: {
   const novoTotalPct = planejada > 0 ? (novoTotal / planejada) * 100 : 0
   const seraTotal = novoTotal >= planejada
 
+  const [ajustarConsumo, setAjustarConsumo] = useState(false)
+  const [consumoReal, setConsumoReal] = useState<Record<string, string>>({})
+
+  const { data: explosao = [] } = useQuery<ExplosaoItem[]>({
+    queryKey: ['bom-explosao', ordem.produtoId, qtdForm],
+    queryFn: () => api.get(`/producao/bom/${ordem.produtoId}/explosao`, { params: { quantidade: qtdForm } }).then(r => r.data.explosao),
+    enabled: ajustarConsumo && qtdForm > 0,
+  })
+
   const mutation = useMutation({
-    mutationFn: (data: ApontamentoData) =>
-      api.post(`/producao/ordens/${ordem.id}/apontar`, data),
-    onSuccess: () => {
+    mutationFn: (payload: ApontamentoData & { consumos?: { componenteId: string; quantidade: number }[] }) =>
+      api.post(`/producao/ordens/${ordem.id}/apontar`, payload),
+    onSuccess: (res) => {
       queryClient.invalidateQueries({ queryKey: ['ordens-producao'] })
       queryClient.invalidateQueries({ queryKey: ['produtos-estoque'] })
       queryClient.invalidateQueries({ queryKey: ['movimentacoes'] })
+      const d = res.data as { variancia?: number; custoRealLote?: number; custoPadraoLote?: number }
+      if (d.variancia !== undefined && Math.abs(d.variancia) > 0.005) {
+        const f = (v?: number) => (v ?? 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
+        alert(`Apontamento registrado.\nCusto real do lote: ${f(d.custoRealLote)}\nCusto padrão: ${f(d.custoPadraoLote)}\nVariância: ${f(d.variancia)}`)
+      }
       onSuccess()
     },
   })
 
+  function enviar(data: ApontamentoData) {
+    const consumos = ajustarConsumo
+      ? explosao.map(e => ({ componenteId: e.componenteId, quantidade: Number(consumoReal[e.componenteId] ?? e.necessario) }))
+      : undefined
+    mutation.mutate({ ...data, consumos })
+  }
+
   return (
-    <Form onSubmit={handleSubmit(d => mutation.mutate(d))} className="space-y-5">
+    <Form onSubmit={handleSubmit(enviar)} className="space-y-5">
       {/* Cabeçalho da OP */}
       <div className="bg-gray-50 rounded-lg border border-gray-200 p-4 space-y-3">
         <div className="flex justify-between text-sm">
@@ -101,6 +128,14 @@ function ApontamentoForm({ ordem, onSuccess, onCancel }: {
           <span className="text-gray-500">Restante</span>
           <span className="font-bold tabular-nums text-amber-700">{restante.toFixed(3)}</span>
         </div>
+        {Number(ordem.custoRealTotal ?? 0) > 0 && (
+          <div className="flex justify-between text-sm">
+            <span className="text-gray-500">Custo real do lote (acum.)</span>
+            <span className="font-semibold tabular-nums text-gray-900">
+              {Number(ordem.custoRealTotal).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+            </span>
+          </div>
+        )}
 
         {/* Barra de progresso atual */}
         <div>
@@ -156,6 +191,65 @@ function ApontamentoForm({ ordem, onSuccess, onCancel }: {
           </div>
         </div>
       )}
+
+      {/* Consumo real de insumos (variância) */}
+      <div className="border border-gray-200 rounded-lg">
+        <button
+          type="button"
+          onClick={() => setAjustarConsumo(v => !v)}
+          className="w-full flex items-center justify-between px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
+        >
+          <span>Ajustar consumo real de insumos</span>
+          <span className="text-xs text-gray-400">{ajustarConsumo ? 'ocultar' : 'opcional'}</span>
+        </button>
+        {ajustarConsumo && (
+          <div className="border-t border-gray-100 p-3">
+            {qtdForm <= 0 ? (
+              <p className="text-xs text-gray-400">Informe a quantidade a apontar.</p>
+            ) : explosao.length === 0 ? (
+              <p className="text-xs text-gray-400">Carregando insumos...</p>
+            ) : (
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-gray-500 text-left">
+                    <th className="py-1">Insumo</th>
+                    <th className="py-1 text-right">Teórico</th>
+                    <th className="py-1 text-right">Consumo real</th>
+                    <th className="py-1 text-right">Disponível</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {explosao.map(e => {
+                    const real = Number(consumoReal[e.componenteId] ?? e.necessario)
+                    return (
+                      <tr key={e.componenteId} className="border-t border-gray-50">
+                        <td className="py-1.5">{e.insumo}</td>
+                        <td className="py-1.5 text-right tabular-nums text-gray-500">{e.necessario.toFixed(3)} {e.unidade}</td>
+                        <td className="py-1.5 text-right">
+                          <input
+                            type="number"
+                            step="0.001"
+                            min="0"
+                            value={consumoReal[e.componenteId] ?? e.necessario.toFixed(3)}
+                            onChange={ev => setConsumoReal(p => ({ ...p, [e.componenteId]: ev.target.value }))}
+                            className="w-24 px-2 py-1 border border-gray-300 rounded text-right tabular-nums focus:outline-none focus:ring-2 focus:ring-primary-500"
+                          />
+                        </td>
+                        <td className={clsx('py-1.5 text-right tabular-nums', e.disponivel < real ? 'text-red-600' : 'text-gray-500')}>
+                          {e.disponivel.toFixed(3)}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            )}
+            <p className="text-[11px] text-gray-400 mt-2">
+              Em branco usa o consumo teórico do BOM. Alterações geram variância de custo do lote.
+            </p>
+          </div>
+        )}
+      </div>
 
       <FormField label="Observação">
         <Textarea {...register('observacao')} placeholder="Turno, operador, observações de qualidade..." rows={2} />

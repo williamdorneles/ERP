@@ -8,7 +8,7 @@ export async function categoriasRoutes(app: FastifyInstance) {
   app.get('/', async () => {
     return prisma.categoria.findMany({
       orderBy: { nome: 'asc' },
-      include: { _count: { select: { produtos: true, fichasTecnicas: true } } },
+      include: { _count: { select: { produtos: true } } },
     })
   })
 
@@ -45,7 +45,7 @@ export async function categoriasRoutes(app: FastifyInstance) {
     const { id } = request.params as { id: string }
     const existe = await prisma.categoria.findUnique({ where: { id }, select: { id: true } })
     if (!existe) return reply.code(404).send({ error: 'Categoria não encontrada.' })
-    // A FK tem ON DELETE SET NULL — produtos e fichas ficam com categoriaId = null automaticamente
+    // A FK tem ON DELETE SET NULL — produtos ficam com categoriaId = null automaticamente
     await prisma.categoria.delete({ where: { id } })
     return reply.code(204).send()
   })
