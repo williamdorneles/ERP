@@ -151,6 +151,7 @@ async function main() {
 
   const configuracoesDefault = [
     { chave: 'METODO_CUSTO', valor: 'MEDIO', descricao: 'Método de custo usado no CMV e margens: MEDIO (Custo Médio Ponderado) ou ULTIMO (Último Custo)' },
+    { chave: 'PERMITIR_ESTOQUE_NEGATIVO', valor: 'SIM', descricao: 'Permite que saídas/consumos deixem o estoque negativo (SIM) ou bloqueia quando não há saldo (NAO)' },
     // Contas padrão de encargos financeiros (DRE) — valor vazio até o usuário vincular
     { chave: 'CONTA_TARIFA_BANCARIA', valor: '', descricao: 'Conta do plano de contas para tarifas bancárias (despesa financeira) lançadas na conciliação/baixa' },
     { chave: 'CONTA_JUROS_PAGOS', valor: '', descricao: 'Conta do plano de contas para juros e multas pagos por atraso (despesa financeira)' },

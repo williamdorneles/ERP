@@ -5,6 +5,7 @@ import { CriarMovimentacaoSchema } from '@erp/shared'
 import { requirePerfil } from '../../plugins/auth.plugin.js'
 import { propagarCustoComponente } from '../produtos/custo-bom.service.js'
 import { quantidadeArmazenada, efeitoEstoque } from './movimento.js'
+import { permiteEstoqueNegativo } from './config-estoque.js'
 
 const QueryMovimentacoesSchema = z.object({
   produtoId: z.string().uuid().optional(),
@@ -45,6 +46,17 @@ export async function estoqueRoutes(app: FastifyInstance) {
 
     const estoqueAtual = Number(prod.estoqueAtual)
     const custoMedioAtual = Number(prod.custoMedio)
+
+    // Bloqueia baixa que deixaria o saldo negativo, se a configuração não permitir
+    if (data.tipo !== 'ENTRADA') {
+      const qtdeCheck = quantidadeArmazenada(data.tipo, data.quantidade, data.ajusteSentido)
+      const novoSaldo = estoqueAtual + efeitoEstoque(data.tipo, qtdeCheck)
+      if (novoSaldo < -0.0001 && !(await permiteEstoqueNegativo())) {
+        return reply.code(400).send({
+          error: `Estoque insuficiente: saldo atual ${estoqueAtual.toLocaleString('pt-BR')}, esta operação deixaria ${novoSaldo.toFixed(3)}. Habilite "estoque negativo" em Configurações > Estoque para permitir.`,
+        })
+      }
+    }
 
     // Método de custeio configurável (MEDIO padrão ou ULTIMO)
     const configMetodo = await prisma.configuracao.findUnique({ where: { chave: 'METODO_CUSTO' } })

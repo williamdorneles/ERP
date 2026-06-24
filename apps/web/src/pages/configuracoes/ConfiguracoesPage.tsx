@@ -6,10 +6,10 @@ import { useAuthStore } from '../../store/auth'
 import { FormField, Input, Select } from '../../components/ui/FormField'
 import { Button } from '../../components/ui/Button'
 import { Form } from '../../components/ui/Form'
-import { Settings, Receipt, Building2, Shield, CheckCircle2, AlertTriangle, Upload, Coins, Search, X } from 'lucide-react'
+import { Settings, Receipt, Building2, Shield, CheckCircle2, AlertTriangle, Upload, Coins, Search, X, Boxes } from 'lucide-react'
 import clsx from 'clsx'
 
-type Secao = 'sistema' | 'financeiro' | 'fiscal'
+type Secao = 'sistema' | 'estoque' | 'financeiro' | 'fiscal'
 type TabFiscal = 'empresa' | 'endereco' | 'nfe' | 'certificado'
 
 interface Configuracao {
@@ -22,6 +22,14 @@ interface Configuracao {
 const LABELS: Record<string, string> = {
   METODO_CUSTO: 'Método de Custo',
 }
+
+// Chaves com aba dedicada ou internas — não aparecem na aba "Sistema" genérica
+const CHAVES_DEDICADAS = new Set([
+  'METODO_CUSTO', 'PERMITIR_ESTOQUE_NEGATIVO',
+  'CONTA_TARIFA_BANCARIA', 'CONTA_JUROS_PAGOS', 'CONTA_JUROS_RECEBIDOS',
+  'CONTA_DESCONTO_OBTIDO', 'CONTA_DESCONTO_CONCEDIDO',
+  'ULTIMO_NSU_ENTRADA',
+])
 
 export function ConfiguracoesPage() {
   const { usuario } = useAuthStore()
@@ -48,6 +56,15 @@ export function ConfiguracoesPage() {
             <Settings size={16} /> Sistema
           </button>
           <button
+            onClick={() => setSecao('estoque')}
+            className={clsx(
+              'w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition',
+              secao === 'estoque' ? 'bg-primary-50 text-primary-700' : 'text-gray-600 hover:bg-gray-100',
+            )}
+          >
+            <Boxes size={16} /> Estoque
+          </button>
+          <button
             onClick={() => setSecao('financeiro')}
             className={clsx(
               'w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition',
@@ -70,6 +87,7 @@ export function ConfiguracoesPage() {
         {/* Conteúdo */}
         <div className="flex-1 min-w-0">
           {secao === 'sistema' && <SecaoSistema isAdmin={isAdmin} />}
+          {secao === 'estoque' && <SecaoEstoque isAdmin={isAdmin} />}
           {secao === 'financeiro' && <SecaoFinanceiro isAdmin={isAdmin} />}
           {secao === 'fiscal' && <SecaoFiscal />}
         </div>
@@ -111,6 +129,8 @@ function SecaoSistema({ isAdmin }: { isAdmin: boolean }) {
 
   if (loading) return <div className="text-gray-400 text-sm py-8 text-center">Carregando...</div>
 
+  const visiveis = configs.filter(c => !CHAVES_DEDICADAS.has(c.chave))
+
   return (
     <div className="space-y-4">
       {!isAdmin && (
@@ -121,40 +141,136 @@ function SecaoSistema({ isAdmin }: { isAdmin: boolean }) {
       {erro && <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">{erro}</div>}
       {sucesso && <div className="bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded-lg text-sm">{sucesso}</div>}
 
-      <div className="bg-white rounded-xl border border-gray-200 divide-y divide-gray-100">
-        {configs.map(cfg => (
-          <div key={cfg.chave} className="px-6 py-5 space-y-3">
-            <div>
-              <p className="font-medium text-gray-900">{LABELS[cfg.chave] ?? cfg.chave}</p>
-              {cfg.descricao && <p className="text-xs text-gray-500 mt-0.5">{cfg.descricao}</p>}
-            </div>
-
-            {cfg.chave === 'METODO_CUSTO' && (
-              <div className="flex gap-3">
-                {(['MEDIO', 'ULTIMO'] as const).map(opcao => (
-                  <button
-                    key={opcao}
-                    disabled={!isAdmin || salvando === cfg.chave}
-                    onClick={() => salvar(cfg.chave, opcao)}
-                    className={clsx(
-                      'px-4 py-2 rounded-lg text-sm font-medium border transition',
-                      cfg.valor === opcao
-                        ? 'bg-primary-600 border-primary-600 text-white'
-                        : 'bg-white border-gray-300 text-gray-700 hover:border-primary-400',
-                      (!isAdmin || salvando === cfg.chave) && 'opacity-50 cursor-not-allowed',
-                    )}
-                  >
-                    {opcao === 'MEDIO' ? 'Custo Médio Ponderado' : 'Último Custo'}
-                  </button>
-                ))}
+      {visiveis.length === 0 ? (
+        <div className="bg-white rounded-xl border border-gray-200 px-6 py-8 text-center text-sm text-gray-400">
+          Nenhuma configuração geral. Veja as abas Estoque, Financeiro e Fiscal.
+        </div>
+      ) : (
+        <div className="bg-white rounded-xl border border-gray-200 divide-y divide-gray-100">
+          {visiveis.map(cfg => (
+            <div key={cfg.chave} className="px-6 py-5 space-y-3">
+              <div>
+                <p className="font-medium text-gray-900">{LABELS[cfg.chave] ?? cfg.chave}</p>
+                {cfg.descricao && <p className="text-xs text-gray-500 mt-0.5">{cfg.descricao}</p>}
               </div>
-            )}
+              <p className="text-xs text-gray-400">
+                Atualizado em {new Date(cfg.atualizadoEm).toLocaleString('pt-BR')}
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
 
-            <p className="text-xs text-gray-400">
-              Atualizado em {new Date(cfg.atualizadoEm).toLocaleString('pt-BR')}
+// ─── Seção Estoque (custo + estoque negativo) ──────────────────────────────────
+
+function BotoesOpcao({ valorAtual, opcoes, disabled, onSelect }: {
+  valorAtual: string
+  opcoes: { valor: string; label: string }[]
+  disabled: boolean
+  onSelect: (v: string) => void
+}) {
+  return (
+    <div className="flex gap-3 flex-wrap">
+      {opcoes.map(o => (
+        <button
+          key={o.valor}
+          disabled={disabled}
+          onClick={() => onSelect(o.valor)}
+          className={clsx(
+            'px-4 py-2 rounded-lg text-sm font-medium border transition',
+            valorAtual === o.valor
+              ? 'bg-primary-600 border-primary-600 text-white'
+              : 'bg-white border-gray-300 text-gray-700 hover:border-primary-400',
+            disabled && 'opacity-50 cursor-not-allowed',
+          )}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function SecaoEstoque({ isAdmin }: { isAdmin: boolean }) {
+  const qc = useQueryClient()
+  const [salvando, setSalvando] = useState<string | null>(null)
+  const [msg, setMsg] = useState<{ ok: boolean; texto: string } | null>(null)
+
+  const { data: configs = [], isLoading } = useQuery<Configuracao[]>({
+    queryKey: ['configuracoes'],
+    queryFn: () => api.get('/configuracoes').then(r => r.data),
+  })
+  const valor = (chave: string) => configs.find(c => c.chave === chave)?.valor ?? ''
+
+  async function salvar(chave: string, v: string) {
+    setSalvando(chave); setMsg(null)
+    try {
+      await api.put(`/configuracoes/${chave}`, { valor: v })
+      await qc.invalidateQueries({ queryKey: ['configuracoes'] })
+      setMsg({ ok: true, texto: 'Configuração salva.' })
+      setTimeout(() => setMsg(null), 3000)
+    } catch {
+      setMsg({ ok: false, texto: 'Erro ao salvar. Apenas administradores podem alterar.' })
+    } finally {
+      setSalvando(null)
+    }
+  }
+
+  if (isLoading) return <div className="text-gray-400 text-sm py-8 text-center">Carregando...</div>
+
+  return (
+    <div className="space-y-4">
+      {!isAdmin && (
+        <div className="bg-amber-50 border border-amber-200 text-amber-700 px-4 py-3 rounded-lg text-sm">
+          Apenas administradores podem alterar configurações.
+        </div>
+      )}
+      {msg && (
+        <div className={clsx('px-4 py-3 rounded-lg text-sm border',
+          msg.ok ? 'bg-green-50 border-green-200 text-green-700' : 'bg-red-50 border-red-200 text-red-700')}>
+          {msg.texto}
+        </div>
+      )}
+
+      <div className="bg-white rounded-xl border border-gray-200 divide-y divide-gray-100">
+        <div className="px-6 py-5 space-y-3">
+          <div>
+            <p className="font-medium text-gray-900">Estoque negativo</p>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Define se saídas e consumos (venda e produção) podem deixar o saldo negativo, ou se são bloqueados quando falta estoque.
             </p>
           </div>
-        ))}
+          <BotoesOpcao
+            valorAtual={valor('PERMITIR_ESTOQUE_NEGATIVO') || 'SIM'}
+            disabled={!isAdmin || salvando === 'PERMITIR_ESTOQUE_NEGATIVO'}
+            onSelect={v => salvar('PERMITIR_ESTOQUE_NEGATIVO', v)}
+            opcoes={[
+              { valor: 'NAO', label: 'Bloquear (não permite)' },
+              { valor: 'SIM', label: 'Permitir negativo' },
+            ]}
+          />
+        </div>
+
+        <div className="px-6 py-5 space-y-3">
+          <div>
+            <p className="font-medium text-gray-900">Método de Custo</p>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Custo usado no CMV e nas margens: custo médio ponderado móvel ou custo da última entrada.
+            </p>
+          </div>
+          <BotoesOpcao
+            valorAtual={valor('METODO_CUSTO') || 'MEDIO'}
+            disabled={!isAdmin || salvando === 'METODO_CUSTO'}
+            onSelect={v => salvar('METODO_CUSTO', v)}
+            opcoes={[
+              { valor: 'MEDIO', label: 'Custo Médio Ponderado' },
+              { valor: 'ULTIMO', label: 'Último Custo' },
+            ]}
+          />
+        </div>
       </div>
     </div>
   )
