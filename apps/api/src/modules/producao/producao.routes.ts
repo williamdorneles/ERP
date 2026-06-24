@@ -289,15 +289,24 @@ export async function producaoRoutes(app: FastifyInstance) {
     const concluida = novoTotal >= Number(ordem.quantidade) - 0.001
     const obs = `Apontamento OP ${ordem.numero}${observacao ? ' — ' + observacao : ''}`
 
+    // Custos atuais para registrar nas movimentações (rastreabilidade no extrato).
+    // Não altera o custo dos produtos — apenas grava o snapshot na movimentação.
+    const idsCusto = [ordem.produtoId, ...bom.itens.map(i => i.componenteId)]
+    const custosProd = await prisma.produto.findMany({
+      where: { id: { in: idsCusto } },
+      select: { id: true, custoUnitario: true },
+    })
+    const custoDe = (pid: string) => +Number(custosProd.find(c => c.id === pid)?.custoUnitario ?? 0).toFixed(4)
+
     const apontamento = await prisma.$transaction(async (tx) => {
       // Cria o registro do apontamento
       const apt = await tx.apontamentoProducao.create({
         data: { ordemProducaoId: id, quantidade, observacao },
       })
 
-      // Entrada do produto acabado vinculada ao apontamento
+      // Entrada do produto acabado vinculada ao apontamento (custo = custo do BOM)
       await tx.movimentacaoEstoque.create({
-        data: { produtoId: ordem.produtoId, apontamentoId: apt.id, tipo: 'ENTRADA', quantidade, observacao: obs },
+        data: { produtoId: ordem.produtoId, apontamentoId: apt.id, tipo: 'ENTRADA', quantidade, custoUnitario: custoDe(ordem.produtoId), observacao: obs },
       })
       await tx.produto.update({
         where: { id: ordem.produtoId },
@@ -308,7 +317,7 @@ export async function producaoRoutes(app: FastifyInstance) {
       for (const item of bom.itens) {
         const consumo = Number(item.quantidade) * fator * (1 + Number(item.percPerda) / 100)
         await tx.movimentacaoEstoque.create({
-          data: { produtoId: item.componenteId, apontamentoId: apt.id, tipo: 'SAIDA', quantidade: consumo, observacao: obs },
+          data: { produtoId: item.componenteId, apontamentoId: apt.id, tipo: 'SAIDA', quantidade: consumo, custoUnitario: custoDe(item.componenteId), observacao: obs },
         })
         await tx.produto.update({
           where: { id: item.componenteId },
@@ -368,6 +377,7 @@ export async function producaoRoutes(app: FastifyInstance) {
             apontamentoId: apontamentoId, // vincula ao mesmo apontamento para rastreabilidade
             tipo: tipoInverso as never,
             quantidade: mov.quantidade,
+            custoUnitario: mov.custoUnitario,
             observacao: obs,
           },
         })
@@ -423,6 +433,7 @@ async function estornarTodosApontamentos(ordemId: string, motivoCancelamento: st
             apontamentoId: apt.id,
             tipo: tipoInverso as never,
             quantidade: mov.quantidade,
+            custoUnitario: mov.custoUnitario,
             observacao: `${motivoCancelamento} (Apt. ${apt.id.slice(0, 8)})`,
           },
         })

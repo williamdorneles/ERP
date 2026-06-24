@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { CriarMovimentacaoSchema } from '@erp/shared'
 import { requirePerfil } from '../../plugins/auth.plugin.js'
 import { propagarCustoComponente } from '../produtos/custo-bom.service.js'
+import { quantidadeArmazenada, efeitoEstoque } from './movimento.js'
 
 const QueryMovimentacoesSchema = z.object({
   produtoId: z.string().uuid().optional(),
@@ -96,12 +97,15 @@ export async function estoqueRoutes(app: FastifyInstance) {
         return mov
       }
 
-      // SAÍDA / PERDA / AJUSTE: baixa pelo custo médio atual, sem alterar o custo do produto
+      // SAÍDA / PERDA / AJUSTE: baixa pelo custo médio atual, sem alterar o custo do produto.
+      // AJUSTE é bidirecional: ajusteSentido ENTRADA aumenta, SAIDA (padrão) reduz.
+      const qtdeMov = quantidadeArmazenada(data.tipo, data.quantidade, data.ajusteSentido)
+
       const mov = await tx.movimentacaoEstoque.create({
         data: {
           produtoId: data.produtoId,
           tipo: data.tipo,
-          quantidade: data.quantidade,
+          quantidade: qtdeMov,
           custoUnitario: +custoMedioAtual.toFixed(4),
           lote: data.lote,
           dataVencimento: data.dataVencimento,
@@ -110,7 +114,7 @@ export async function estoqueRoutes(app: FastifyInstance) {
       })
       await tx.produto.update({
         where: { id: data.produtoId },
-        data: { estoqueAtual: { increment: -data.quantidade } },
+        data: { estoqueAtual: { increment: efeitoEstoque(data.tipo, qtdeMov) } },
       })
       return mov
     })
@@ -132,12 +136,37 @@ export async function estoqueRoutes(app: FastifyInstance) {
     }
 
     await prisma.$transaction(async (tx) => {
-      // Reverte o efeito da movimentação no estoque
-      const delta = mov.tipo === 'ENTRADA' ? -Number(mov.quantidade) : Number(mov.quantidade)
+      // Reverte o efeito da movimentação no estoque (estorno = -efeito).
+      const delta = -efeitoEstoque(mov.tipo as never, Number(mov.quantidade))
       await tx.produto.update({
         where: { id: mov.produtoId },
         data: { estoqueAtual: { increment: delta } },
       })
+
+      // ENTRADA manual também alterou o custo do produto: remove o registro de custo
+      // co-criado por esta entrada e reverte o custo ao registro anterior restante
+      // (mesmo padrão da exclusão no histórico de custos do cadastro).
+      if (mov.tipo === 'ENTRADA') {
+        const ini = new Date(mov.criadoEm.getTime() - 2000)
+        const fim = new Date(mov.criadoEm.getTime() + 2000)
+        const custoRec = await tx.produtoCusto.findFirst({
+          where: { produtoId: mov.produtoId, motivo: 'MOVIMENTACAO_ESTOQUE', criadoEm: { gte: ini, lte: fim } },
+          orderBy: { criadoEm: 'desc' },
+        })
+        if (custoRec) await tx.produtoCusto.delete({ where: { id: custoRec.id } })
+
+        const anterior = await tx.produtoCusto.findFirst({
+          where: { produtoId: mov.produtoId },
+          orderBy: { criadoEm: 'desc' },
+        })
+        const custo = +(anterior ? Number(anterior.custo) : 0).toFixed(4)
+        await tx.produto.update({
+          where: { id: mov.produtoId },
+          data: { custoUnitario: custo, custoMedio: custo, ultimoCusto: custo },
+        })
+        await propagarCustoComponente(tx, mov.produtoId)
+      }
+
       await tx.movimentacaoEstoque.delete({ where: { id } })
     })
 

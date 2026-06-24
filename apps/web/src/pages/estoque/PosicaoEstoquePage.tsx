@@ -57,6 +57,7 @@ const movSchema = z.object({
   tipo: z.enum(['ENTRADA', 'SAIDA', 'AJUSTE', 'PERDA']),
   quantidade: z.coerce.number().positive('Deve ser maior que 0'),
   custoUnitario: z.coerce.number().min(0).optional(),
+  ajusteSentido: z.enum(['ENTRADA', 'SAIDA']).optional(),
   lote: z.string().optional(),
   dataVencimento: z.string().optional(),
   observacao: z.string().optional(),
@@ -180,7 +181,7 @@ function MovimentacaoForm({
 
   const { register, handleSubmit, watch, setValue, formState: { errors } } = useForm<MovFormData>({
     resolver: zodResolver(movSchema),
-    defaultValues: { tipo: 'ENTRADA', produtoId: defaultProdutoId ?? '' },
+    defaultValues: { tipo: 'ENTRADA', produtoId: defaultProdutoId ?? '', ajusteSentido: 'SAIDA' },
   })
 
   const produtoSel = produtos.find(p => p.id === watch('produtoId'))
@@ -190,6 +191,7 @@ function MovimentacaoForm({
     mutationFn: (data: MovFormData) => api.post('/estoque/movimentacoes', {
       ...data,
       custoUnitario: data.tipo === 'ENTRADA' ? data.custoUnitario : undefined,
+      ajusteSentido: data.tipo === 'AJUSTE' ? data.ajusteSentido : undefined,
       dataVencimento: data.dataVencimento || undefined,
       lote: data.lote || undefined,
       observacao: data.observacao || undefined,
@@ -227,6 +229,15 @@ function MovimentacaoForm({
           <option value="PERDA">Perda — descarte ou vencimento</option>
         </Select>
       </FormField>
+
+      {tipo === 'AJUSTE' && (
+        <FormField label="Sentido do Ajuste" hint="Acerto de inventário para mais ou para menos">
+          <Select {...register('ajusteSentido')}>
+            <option value="SAIDA">Reduzir estoque (−)</option>
+            <option value="ENTRADA">Aumentar estoque (+)</option>
+          </Select>
+        </FormField>
+      )}
 
       <div className="grid grid-cols-2 gap-4">
         <FormField
@@ -503,8 +514,11 @@ export function PosicaoEstoquePage() {
               </thead>
               <tbody className="divide-y divide-gray-50">
                 {movs.map(m => {
+                  const q = Number(m.quantidade)
+                  const positivo = m.tipo === 'ENTRADA' || (m.tipo === 'AJUSTE' && q >= 0)
+                  const sinal = positivo ? '+' : '−'
                   const custo = m.custoUnitario != null ? Number(m.custoUnitario) : null
-                  const valor = custo != null ? custo * Number(m.quantidade) : null
+                  const valor = custo != null ? custo * Math.abs(q) : null
                   return (
                   <tr key={m.id} className="hover:bg-gray-50 transition">
                     <td className="px-4 py-3 text-gray-500 whitespace-nowrap text-xs">
@@ -520,9 +534,9 @@ export function PosicaoEstoquePage() {
                     </td>
                     <td className={clsx(
                       'px-4 py-3 text-right font-bold tabular-nums',
-                      m.tipo === 'ENTRADA' ? 'text-green-700' : 'text-red-700',
+                      positivo ? 'text-green-700' : 'text-red-700',
                     )}>
-                      {movSinal[m.tipo]}{Number(m.quantidade).toLocaleString('pt-BR', { minimumFractionDigits: 3, maximumFractionDigits: 3 })} {m.produto.unidadeMedida}
+                      {sinal}{Math.abs(q).toLocaleString('pt-BR', { minimumFractionDigits: 3, maximumFractionDigits: 3 })} {m.produto.unidadeMedida}
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums text-gray-600 text-xs whitespace-nowrap">
                       {custo != null ? `R$ ${custo.toLocaleString('pt-BR', { minimumFractionDigits: 4, maximumFractionDigits: 4 })}` : '—'}
