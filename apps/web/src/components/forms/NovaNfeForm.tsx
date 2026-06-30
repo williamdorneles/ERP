@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useForm, useFieldArray, Controller } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { Plus, Trash2, AlertTriangle, CheckCircle2, XCircle, RotateCcw } from 'lucide-react'
 import { api } from '../../lib/api'
 import { FormField, Input, Select, Textarea, CurrencyInput } from '../ui/FormField'
@@ -10,8 +10,6 @@ import { BuscaInput } from '../ui/BuscaInput'
 import { Button } from '../ui/Button'
 import { Form } from '../ui/Form'
 
-// Linhas em branco (sem produto) são toleradas no formulário e descartadas — só as
-// linhas com produto são validadas. Permite o fluxo "Enter no desconto cria nova linha".
 const itemSchema = z.object({
   produtoId: z.string(),
   quantidade: z.coerce.number(),
@@ -20,18 +18,16 @@ const itemSchema = z.object({
 })
 
 const schema = z.object({
-  canal: z.enum(['BALCAO', 'ATACADO', 'DELIVERY', 'ONLINE']),
+  naturezaOperacaoId: z.string().min(1, 'Selecione a natureza da operação'),
+  finNFe: z.coerce.number().int().min(1).max(4),
+  indPres: z.coerce.number().int().min(0).max(9),
   pessoaId: z.string().optional(),
   formaPagamento: z.enum(['DINHEIRO', 'CREDITO', 'DEBITO', 'PIX', 'PRAZO']),
-  naturezaOperacaoId: z.string().min(1, 'Selecione a natureza da operação'),
-  indPres: z.coerce.number().int().min(0).max(9),
-  // Cabeçalho comercial
   dataEmissao: z.string().min(1, 'Informe a data'),
   previsaoEntrega: z.string().optional(),
   validadeProposta: z.string().optional(),
   pedidoCliente: z.string().optional(),
   vendedorId: z.string().optional(),
-  // Local de entrega
   entregaDiferente: z.boolean(),
   entregaCep: z.string().optional(),
   entregaLogradouro: z.string().optional(),
@@ -46,7 +42,6 @@ const schema = z.object({
   vSeguro: z.coerce.number().min(0),
   vOutros: z.coerce.number().min(0),
   modalidadeFrete: z.coerce.number().int().min(0).max(9),
-  // Transporte
   transportadora: z.string().optional(),
   transportadoraDoc: z.string().optional(),
   veiculoPlaca: z.string().optional(),
@@ -62,7 +57,6 @@ const schema = z.object({
   if (preenchidos.length === 0) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Adicione ao menos 1 item', path: ['itens'] })
   }
-  // Valida quantidade/preço apenas nas linhas que têm produto
   d.itens.forEach((i, idx) => {
     if (!i.produtoId) return
     if (!(Number(i.quantidade) > 0)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Deve ser maior que 0', path: ['itens', idx, 'quantidade'] })
@@ -71,38 +65,66 @@ const schema = z.object({
 })
 
 type FormData = z.infer<typeof schema>
-
 interface ParcelaForm { numero: string; vencimento: string; valor: number; meioPagamento: string }
-
 interface Produto {
   id: string; nome: string; precoVenda: number; codigo?: string | null
-  ncm?: string | null; cfop?: string | null; unidadeComercial?: string | null
-  unidadeMedida?: string | null
+  ncm?: string | null; unidadeComercial?: string | null; unidadeMedida?: string | null
 }
 interface Pessoa {
-  id: string; nome: string; nomeFantasia?: string | null; tipoLegal?: string
-  documento?: string | null; ie?: string | null; indicadorIE?: number; limiteCredito?: number | string | null
+  id: string; nome: string; nomeFantasia?: string | null
+  documento?: string | null; ie?: string | null; indicadorIE?: number
   email?: string | null; telefone?: string | null
   cep?: string | null; logradouro?: string | null; numero?: string | null; complemento?: string | null
   bairro?: string | null; municipio?: string | null; uf?: string | null; codigoIBGE?: string | null
 }
-interface Vendedor { id: string; nome: string; codigo?: string; documento?: string | null }
+interface Vendedor { id: string; nome: string; documento?: string | null }
 interface Natureza {
-  id: string; descricao: string; modeloPadrao?: 'NFE' | 'NFCE' | null; padraoVenda: boolean
+  id: string; descricao: string; padraoVenda: boolean
   cfop?: string | null; csosn?: string | null; cstIcms?: string | null; aliquotaIcms?: number | null
   cstPis?: string | null; aliquotaPis?: number | null
   cstCofins?: string | null; aliquotaCofins?: number | null
   cstIpi?: string | null; aliquotaIpi?: number | null
 }
+interface Props { onClose: () => void; onSuccess: (notaId: string) => void }
 
-interface PedidoVendaFormProps {
-  onSuccess: () => void
-  onCancel: () => void
-  pedidoId?: string // quando presente, o formulário entra em modo de edição
-  readOnly?: boolean // somente leitura (pedido com estoque/financeiro lançado)
+const fmt = (n: number) => `R$ ${n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+const today = () => new Date().toISOString().split('T')[0]
+const fmtDate = (s: string) => s ? new Date(s + 'T12:00:00').toLocaleDateString('pt-BR') : '—'
+const meioPorForma: Record<string, string> = {
+  DINHEIRO: 'Dinheiro', CREDITO: 'Cartão de Crédito', DEBITO: 'Cartão de Débito', PIX: 'PIX', PRAZO: 'Boleto',
+}
+const meiosPagamento = ['Dinheiro', 'Cartão de Crédito', 'Cartão de Débito', 'PIX', 'Boleto', 'Cheque', 'Outros']
+const formaPagNFe: Record<string, string> = {
+  DINHEIRO: '01', CREDITO: '03', DEBITO: '04', PIX: '17', PRAZO: '15',
+}
+const fmtDoc = (d?: string | null) => {
+  const s = (d ?? '').replace(/\D/g, '')
+  if (s.length === 11) return s.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4')
+  if (s.length === 14) return s.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/, '$1.$2.$3/$4-$5')
+  return d ?? ''
+}
+const fmtCep = (c?: string | null) => {
+  const s = (c ?? '').replace(/\D/g, '')
+  return s.length === 8 ? s.replace(/(\d{5})(\d{3})/, '$1-$2') : (c ?? '')
+}
+const indIELabel: Record<number, string> = { 1: 'Contribuinte ICMS', 2: 'Isento de IE', 9: 'Não contribuinte' }
+
+function diasDaCondicao(str: string): number[] {
+  const tokens = str.trim().toLowerCase().split(/\s+/).filter(Boolean)
+  const dias: number[] = []
+  let last = 0
+  for (const t of tokens) {
+    if (/^\+?\d+x$/.test(t)) {
+      const n = parseInt(t.replace('+', ''))
+      for (let i = 1; i <= n; i++) dias.push(last + i * 30)
+      last = dias[dias.length - 1]
+    } else if (/^\d+$/.test(t)) {
+      dias.push(parseInt(t)); last = parseInt(t)
+    }
+  }
+  return dias
 }
 
-// ── Painéis dos atalhos do cliente ───────────────────────────────────────────
 function UltimasVendasPanel({ pessoaId }: { pessoaId: string }) {
   const { data = [], isLoading } = useQuery<{ id: string; numero: string; total: number | string; status: string; criadoEm: string }[]>({
     queryKey: ['cliente-ultimas-vendas', pessoaId],
@@ -141,7 +163,7 @@ function CreditoPanel({ pessoaId }: { pessoaId: string }) {
         : (
           <div className="flex flex-wrap gap-x-6 gap-y-1">
             <span>Limite: <span className="font-medium text-gray-800 tabular-nums">{fmt(data.limiteCredito)}</span></span>
-            <span>A receber em aberto: <span className="font-medium text-gray-800 tabular-nums">{fmt(data.totalAberto)}</span></span>
+            <span>A receber: <span className="font-medium text-gray-800 tabular-nums">{fmt(data.totalAberto)}</span></span>
             <span>Disponível: <span className={`font-semibold tabular-nums ${data.disponivel < 0 ? 'text-red-600' : 'text-green-700'}`}>{fmt(data.disponivel)}</span></span>
           </div>
         )}
@@ -149,53 +171,11 @@ function CreditoPanel({ pessoaId }: { pessoaId: string }) {
   )
 }
 
-const fmt = (n: number) => `R$ ${n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-const today = () => new Date().toISOString().split('T')[0]
-const fmtDate = (s: string) => s ? new Date(s + 'T12:00:00').toLocaleDateString('pt-BR') : '—'
-const meioPorForma: Record<string, string> = {
-  DINHEIRO: 'Dinheiro', CREDITO: 'Cartão de Crédito', DEBITO: 'Cartão de Débito', PIX: 'PIX', PRAZO: 'Boleto',
-}
-const meiosPagamento = ['Dinheiro', 'Cartão de Crédito', 'Cartão de Débito', 'PIX', 'Boleto', 'Cheque', 'Outros']
-const fmtDoc = (d?: string | null) => {
-  const s = (d ?? '').replace(/\D/g, '')
-  if (s.length === 11) return s.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4')
-  if (s.length === 14) return s.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/, '$1.$2.$3/$4-$5')
-  return d ?? ''
-}
-const fmtCep = (c?: string | null) => {
-  const s = (c ?? '').replace(/\D/g, '')
-  return s.length === 8 ? s.replace(/(\d{5})(\d{3})/, '$1-$2') : (c ?? '')
-}
-const indIELabel: Record<number, string> = { 1: 'Contribuinte ICMS', 2: 'Isento de IE', 9: 'Não contribuinte' }
-
-// Parser de condição de pagamento → dias de vencimento. Ex.: "30 60", "2x", "15 +2x"
-function diasDaCondicao(str: string): number[] {
-  const tokens = str.trim().toLowerCase().split(/\s+/).filter(Boolean)
-  const dias: number[] = []
-  let last = 0
-  for (const t of tokens) {
-    if (/^\+?\d+x$/.test(t)) {
-      const n = parseInt(t.replace('+', ''))
-      for (let i = 1; i <= n; i++) dias.push(last + i * 30)
-      last = dias[dias.length - 1]
-    } else if (/^\d+$/.test(t)) {
-      dias.push(parseInt(t)); last = parseInt(t)
-    }
-  }
-  return dias
-}
-
-export function PedidoVendaForm({ onSuccess, onCancel, pedidoId, readOnly = false }: PedidoVendaFormProps) {
-  const queryClient = useQueryClient()
-  const isEditing = !!pedidoId
-
-  // Vínculos selecionados (pesquisa por digitação) — guardados p/ preço e prontidão fiscal
+export function NovaNfeForm({ onClose, onSuccess }: Props) {
   const [clienteSel, setClienteSel] = useState<Pessoa | null>(null)
   const [produtosSel, setProdutosSel] = useState<Record<string, Produto>>({})
   const [clientePanel, setClientePanel] = useState<'dados' | 'vendas' | 'credito' | null>(null)
   const [itemTab, setItemTab] = useState<'itens' | 'impostos'>('itens')
-
-  // Cobrança / parcelas (mantidas fora do RHF p/ facilitar "gerar")
   const [parcelas, setParcelas] = useState<ParcelaForm[]>([
     { numero: '001', vencimento: today(), valor: 0, meioPagamento: 'Dinheiro' },
   ])
@@ -206,15 +186,13 @@ export function PedidoVendaForm({ onSuccess, onCancel, pedidoId, readOnly = fals
     queryFn: () => api.get('/naturezas-operacao', { params: { tipo: 'SAIDA', ativo: true } }).then(r => r.data),
   })
 
-  const [numeroPedido, setNumeroPedido] = useState<string | null>(null)
-
-  const { register, handleSubmit, control, watch, setValue, reset, formState: { errors } } = useForm<FormData>({
+  const { register, handleSubmit, control, watch, setValue, formState: { errors } } = useForm<FormData>({
     resolver: zodResolver(schema),
     defaultValues: {
-      canal: 'BALCAO',
-      formaPagamento: 'DINHEIRO',
       naturezaOperacaoId: '',
+      finNFe: 1,
       indPres: 1,
+      formaPagamento: 'DINHEIRO',
       dataEmissao: today(),
       previsaoEntrega: '',
       validadeProposta: '',
@@ -223,10 +201,7 @@ export function PedidoVendaForm({ onSuccess, onCancel, pedidoId, readOnly = fals
       entregaDiferente: false,
       entregaCep: '', entregaLogradouro: '', entregaNumero: '', entregaComplemento: '',
       entregaBairro: '', entregaMunicipio: '', entregaUf: '', entregaCodigoIBGE: '',
-      desconto: 0,
-      vFrete: 0,
-      vSeguro: 0,
-      vOutros: 0,
+      desconto: 0, vFrete: 0, vSeguro: 0, vOutros: 0,
       modalidadeFrete: 9,
       transportadora: '', transportadoraDoc: '', veiculoPlaca: '', veiculoUf: '',
       volumesQtde: 0, volumesEspecie: '', pesoBruto: 0, pesoLiquido: 0,
@@ -237,7 +212,6 @@ export function PedidoVendaForm({ onSuccess, onCancel, pedidoId, readOnly = fals
   const { fields, append, remove } = useFieldArray({ control, name: 'itens' })
   const itensRef = useRef<HTMLDivElement>(null)
 
-  // Adiciona um item e foca a busca de produto da nova linha (entrada rápida)
   function adicionarItem() {
     append({ produtoId: '', quantidade: 1, precoUnitario: 0, desconto: 0 })
     setTimeout(() => {
@@ -254,68 +228,11 @@ export function PedidoVendaForm({ onSuccess, onCancel, pedidoId, readOnly = fals
   const watchNaturezaId = watch('naturezaOperacaoId')
   const watchForma = watch('formaPagamento')
 
-  // Ao abrir o pedido, seleciona a natureza padrão de venda (ou a 1ª)
   useEffect(() => {
     if (naturezas.length === 0 || watchNaturezaId) return
     const padrao = naturezas.find(n => n.padraoVenda) ?? naturezas[0]
-    setValue('naturezaOperacaoId', padrao.id)
+    if (padrao) setValue('naturezaOperacaoId', padrao.id)
   }, [naturezas, watchNaturezaId, setValue])
-
-  // Modo edição: carrega o pedido e popula o formulário
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const { data: pedidoCarregado } = useQuery<any>({
-    queryKey: ['pedido-edicao', pedidoId],
-    queryFn: () => api.get(`/vendas/pedidos/${pedidoId}`).then(r => r.data),
-    enabled: !!pedidoId,
-  })
-  useEffect(() => {
-    const p = pedidoCarregado
-    if (!p) return
-    setNumeroPedido(p.numero ?? null)
-    const d = (s?: string | null) => (s ? String(s).slice(0, 10) : '')
-    reset({
-      canal: p.canal,
-      pessoaId: p.pessoaId ?? '',
-      formaPagamento: p.formaPagamento,
-      naturezaOperacaoId: p.naturezaOperacaoId ?? '',
-      indPres: p.indPres ?? 1,
-      dataEmissao: d(p.dataEmissao ?? p.criadoEm) || today(),
-      previsaoEntrega: d(p.previsaoEntrega),
-      validadeProposta: d(p.validadeProposta),
-      pedidoCliente: p.pedidoCliente ?? '',
-      vendedorId: p.vendedorId ?? '',
-      entregaDiferente: !!p.entregaDiferente,
-      entregaCep: p.entregaCep ?? '', entregaLogradouro: p.entregaLogradouro ?? '',
-      entregaNumero: p.entregaNumero ?? '', entregaComplemento: p.entregaComplemento ?? '',
-      entregaBairro: p.entregaBairro ?? '', entregaMunicipio: p.entregaMunicipio ?? '',
-      entregaUf: p.entregaUf ?? '', entregaCodigoIBGE: p.entregaCodigoIBGE ?? '',
-      desconto: Number(p.desconto ?? 0),
-      vFrete: Number(p.vFrete ?? 0), vSeguro: Number(p.vSeguro ?? 0), vOutros: Number(p.vOutros ?? 0),
-      modalidadeFrete: p.modalidadeFrete ?? 9,
-      transportadora: p.transportadora ?? '', transportadoraDoc: p.transportadoraDoc ?? '',
-      veiculoPlaca: p.veiculoPlaca ?? '', veiculoUf: p.veiculoUf ?? '',
-      volumesQtde: Number(p.volumesQtde ?? 0), volumesEspecie: p.volumesEspecie ?? '',
-      pesoBruto: Number(p.pesoBruto ?? 0), pesoLiquido: Number(p.pesoLiquido ?? 0),
-      observacao: p.observacao ?? '',
-      itens: (p.itens ?? []).map((it: { produtoId: string; quantidade: number | string; precoUnitario: number | string; desconto: number | string }) => ({
-        produtoId: it.produtoId,
-        quantidade: Number(it.quantidade),
-        precoUnitario: Number(it.precoUnitario),
-        desconto: Number(it.desconto ?? 0),
-      })),
-    })
-    if (p.pessoa) setClienteSel(p.pessoa)
-    const prodMap: Record<string, Produto> = {}
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ;(p.itens ?? []).forEach((it: any) => {
-      if (it.produto) prodMap[it.produtoId] = { ...it.produto, precoVenda: Number(it.produto.precoVenda) }
-    })
-    setProdutosSel(prodMap)
-    if (p.parcelasJson) {
-      try { const arr = JSON.parse(p.parcelasJson); if (Array.isArray(arr) && arr.length) setParcelas(arr) } catch { /* ignora */ }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pedidoCarregado])
 
   const subtotal = watchItens?.reduce((acc, item) =>
     acc + Number(item.quantidade) * Number(item.precoUnitario), 0) ?? 0
@@ -326,29 +243,23 @@ export function PedidoVendaForm({ onSuccess, onCancel, pedidoId, readOnly = fals
   const numItens = (watchItens ?? []).filter(i => i.produtoId).length
   const somaQtdes = (watchItens ?? []).filter(i => i.produtoId).reduce((a, i) => a + Number(i.quantidade || 0), 0)
 
-  // ── Impostos (preview) — vêm 100% da natureza de operação ────────────────────
   const naturezaSel = naturezas.find(n => n.id === watchNaturezaId)
   const baseImpostos = Math.max(subtotal - descontoItens - Number(watchDesconto), 0)
   const pct = (a?: number | null) => Number(a ?? 0) / 100
   const imp = {
-    vBC: pct(naturezaSel?.aliquotaIcms) > 0 ? baseImpostos : 0,
     vICMS: baseImpostos * pct(naturezaSel?.aliquotaIcms),
     vPIS: baseImpostos * pct(naturezaSel?.aliquotaPis),
     vCOFINS: baseImpostos * pct(naturezaSel?.aliquotaCofins),
     vIPI: baseImpostos * pct(naturezaSel?.aliquotaIpi),
   }
 
-  // ── Cobrança / parcelas ──────────────────────────────────────────────────────
   const totalParcelas = parcelas.reduce((s, p) => s + Number(p.valor || 0), 0)
   const parcelasBatem = Math.abs(totalParcelas - totalFinal) <= 0.02
 
-  // Mantém a parcela única sincronizada com o total enquanto não houver edição manual.
-  // Usa forma funcional de setParcelas para evitar stale closure em `parcelas`.
   useEffect(() => {
     setParcelas(current => {
       if (current.length !== 1) return current
-      const soma = current.reduce((s, p) => s + Number(p.valor || 0), 0)
-      if (current[0].valor === 0 || Math.abs(soma - totalFinal) > 0.02) {
+      if (current[0].valor === 0 || Math.abs(current.reduce((s, p) => s + Number(p.valor || 0), 0) - totalFinal) > 0.02) {
         return [{ ...current[0], valor: Number(totalFinal.toFixed(2)) }]
       }
       return current
@@ -376,31 +287,23 @@ export function PedidoVendaForm({ onSuccess, onCancel, pedidoId, readOnly = fals
     setParcelas(prev => prev.map((p, i) => (i === idx ? { ...p, [campo]: valor } : p)))
   }
 
-  // ── Prontidão para emissão (valida o caso NF-e, mais exigente) ───────────────
-  const pessoaSel = clienteSel
+  // Prontidão para emissão
   const pendencias: string[] = []
-  if (!pessoaSel) {
+  if (!clienteSel) {
     pendencias.push('NF-e exige destinatário identificado — selecione um cliente (NFC-e a consumidor final dispensa).')
   } else {
-    if (!pessoaSel.documento) pendencias.push('Cliente sem CPF/CNPJ cadastrado.')
-    if (!pessoaSel.logradouro || !pessoaSel.municipio || !pessoaSel.uf) {
+    if (!clienteSel.documento) pendencias.push('Cliente sem CPF/CNPJ cadastrado.')
+    if (!clienteSel.logradouro || !clienteSel.municipio || !clienteSel.uf)
       pendencias.push('Cliente sem endereço completo (logradouro, município e UF).')
-    }
   }
-  // NCM vem do produto; CFOP/impostos vêm da natureza de operação
   const itensSemFiscal = (watchItens ?? [])
-    .map(it => {
-      const prod = it.produtoId ? produtosSel[it.produtoId] : undefined
-      if (!prod) return null
-      return !prod.ncm ? `${prod.nome}: falta NCM` : null
-    })
+    .map(it => { const p = it.produtoId ? produtosSel[it.produtoId] : undefined; return p && !p.ncm ? `${p.nome}: falta NCM` : null })
     .filter((x): x is string => x !== null)
   const prontoParaNFe = pendencias.length === 0 && itensSemFiscal.length === 0
 
   const cepEntregaReg = register('entregaCep')
   const watchEntregaDif = watch('entregaDiferente')
 
-  // Endereço do cliente (cadastro) para exibição no card do destinatário
   const enderecoCliente = clienteSel ? [
     clienteSel.logradouro ? `${clienteSel.logradouro}${clienteSel.numero ? `, ${clienteSel.numero}` : ''}` : null,
     clienteSel.bairro || null,
@@ -408,7 +311,6 @@ export function PedidoVendaForm({ onSuccess, onCancel, pedidoId, readOnly = fals
     clienteSel.cep ? `CEP ${fmtCep(clienteSel.cep)}` : null,
   ].filter(Boolean).join(' — ') : ''
 
-  // Autopreenche o endereço de entrega a partir do CEP (ViaCEP via /lookup)
   async function buscarCepEntrega(cep: string) {
     const d = cep.replace(/\D/g, '')
     if (d.length !== 8) return
@@ -419,76 +321,66 @@ export function PedidoVendaForm({ onSuccess, onCancel, pedidoId, readOnly = fals
       if (e.municipio) setValue('entregaMunicipio', e.municipio)
       if (e.uf) setValue('entregaUf', e.uf)
       if (e.codigoIBGE) setValue('entregaCodigoIBGE', e.codigoIBGE)
-    } catch { /* CEP não encontrado — preenchimento manual */ }
+    } catch { /* CEP não encontrado */ }
   }
 
   const mutation = useMutation({
     mutationFn: (data: FormData) => {
+      const natureza = naturezas.find(n => n.id === data.naturezaOperacaoId)
       const clean = (s?: string) => (s && s.trim() ? s.trim() : undefined)
+      const entrega = data.entregaDiferente
+
       const payload = {
-        ...data,
-        itens: data.itens.filter(i => i.produtoId), // descarta linhas em branco
-        pessoaId: data.pessoaId || undefined,
-        vendedorId: data.vendedorId || undefined,
-        previsaoEntrega: clean(data.previsaoEntrega),
-        validadeProposta: clean(data.validadeProposta),
-        pedidoCliente: clean(data.pedidoCliente),
-        entregaDiferente: data.entregaDiferente,
-        entregaCep: data.entregaDiferente ? clean(data.entregaCep)?.replace(/\D/g, '') : undefined,
-        entregaLogradouro: data.entregaDiferente ? clean(data.entregaLogradouro) : undefined,
-        entregaNumero: data.entregaDiferente ? clean(data.entregaNumero) : undefined,
-        entregaComplemento: data.entregaDiferente ? clean(data.entregaComplemento) : undefined,
-        entregaBairro: data.entregaDiferente ? clean(data.entregaBairro) : undefined,
-        entregaMunicipio: data.entregaDiferente ? clean(data.entregaMunicipio) : undefined,
-        entregaUf: data.entregaDiferente ? clean(data.entregaUf)?.toUpperCase() : undefined,
-        entregaCodigoIBGE: data.entregaDiferente ? clean(data.entregaCodigoIBGE) : undefined,
-        transportadora: clean(data.transportadora),
-        transportadoraDoc: clean(data.transportadoraDoc),
-        veiculoPlaca: clean(data.veiculoPlaca),
-        veiculoUf: clean(data.veiculoUf),
-        volumesEspecie: clean(data.volumesEspecie),
-        volumesQtde: data.volumesQtde ? Number(data.volumesQtde) : undefined,
-        pesoBruto: data.pesoBruto ? Number(data.pesoBruto) : undefined,
-        pesoLiquido: data.pesoLiquido ? Number(data.pesoLiquido) : undefined,
-        parcelas: parcelas.map((p, i) => ({
-          numero: String(i + 1).padStart(3, '0'),
-          vencimento: p.vencimento,
-          valor: Number(p.valor || 0),
-          meioPagamento: p.meioPagamento,
-        })),
+        naturezaOperacao: natureza?.descricao ?? '',
+        finNFe: Number(data.finNFe),
+        destNome: clienteSel?.nome ?? '',
+        destCpfCnpj: clienteSel?.documento?.replace(/\D/g, '') || undefined,
+        destIndicadorIE: clienteSel?.indicadorIE ?? 9,
+        destIE: clienteSel?.ie || undefined,
+        destCep: entrega ? clean(data.entregaCep)?.replace(/\D/g, '') : (clienteSel?.cep?.replace(/\D/g, '') || undefined),
+        destLogradouro: entrega ? clean(data.entregaLogradouro) : (clienteSel?.logradouro || undefined),
+        destNumero: entrega ? clean(data.entregaNumero) : (clienteSel?.numero || undefined),
+        destBairro: entrega ? clean(data.entregaBairro) : (clienteSel?.bairro || undefined),
+        destMunicipio: entrega ? clean(data.entregaMunicipio) : (clienteSel?.municipio || undefined),
+        destUf: entrega ? clean(data.entregaUf)?.toUpperCase() : (clienteSel?.uf || undefined),
+        destCodigoIBGE: entrega ? clean(data.entregaCodigoIBGE) : (clienteSel?.codigoIBGE || undefined),
+        formaPagamento: formaPagNFe[data.formaPagamento] ?? '01',
+        vDesconto: Number(data.desconto),
+        vFrete: Number(data.vFrete),
+        infCpl: clean(data.observacao),
+        itens: data.itens.filter(i => i.produtoId).map((i, idx) => {
+          const prod = produtosSel[i.produtoId]
+          const vProd = Math.max(Number(i.quantidade) * Number(i.precoUnitario) - Number(i.desconto), 0)
+          return {
+            nItem: idx + 1,
+            cProd: prod?.codigo || String(idx + 1).padStart(3, '0'),
+            xProd: prod?.nome ?? '',
+            ncm: prod?.ncm ?? '',
+            cfop: natureza?.cfop ?? '5102',
+            uCom: prod?.unidadeComercial || prod?.unidadeMedida || 'UN',
+            qCom: Number(i.quantidade),
+            vUnCom: Number(i.precoUnitario),
+            vProd,
+            csosn: natureza?.csosn || undefined,
+            cstPIS: natureza?.cstPis || undefined,
+            cstCOFINS: natureza?.cstCofins || undefined,
+            pPIS: Number(natureza?.aliquotaPis ?? 0),
+            pCOFINS: Number(natureza?.aliquotaCofins ?? 0),
+          }
+        }),
       }
-      return isEditing
-        ? api.put(`/vendas/pedidos/${pedidoId}`, payload)
-        : api.post('/vendas/pedidos', payload)
+      return api.post('/fiscal/nfe', payload).then(r => r.data)
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['pedidos-venda'] })
-      queryClient.invalidateQueries({ queryKey: ['dashboard'] })
-      if (pedidoId) queryClient.invalidateQueries({ queryKey: ['pedido-edicao', pedidoId] })
-      onSuccess()
-    },
+    onSuccess: (data) => onSuccess(data.id),
   })
 
-  // Larguras compartilhadas entre cabeçalho e linhas dos itens (mantém alinhamento)
   const col = { num: 'w-8', sku: 'w-24', un: 'w-14', qtd: 'w-20', preco: 'w-32', desc: 'w-28', total: 'w-28', acao: 'w-8' }
 
   return (
     <Form onSubmit={handleSubmit(d => mutation.mutate(d))} className="space-y-6">
-      {readOnly && (
-        <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 flex items-center gap-2 text-sm text-blue-700">
-          <AlertTriangle size={16} />
-          <span>
-            Somente leitura — este pedido já tem estoque e/ou financeiro lançado.
-            Estorne os lançamentos para poder editá-lo.
-          </span>
-        </div>
-      )}
 
-      {/* fieldset desabilitado torna todos os campos/botões internos somente leitura */}
-      <fieldset disabled={readOnly} className="space-y-6 m-0 p-0 border-0 disabled:opacity-95">
-      {/* ── Cabeçalho do pedido ─────────────────────────────────────────── */}
+      {/* ── Cabeçalho ─────────────────────────────────────────────────── */}
       <section className="space-y-4">
-        {/* Natureza da operação + Número */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <div className="lg:col-span-2">
             <FormField label="Natureza da Operação" error={errors.naturezaOperacaoId?.message} required>
@@ -498,15 +390,14 @@ export function PedidoVendaForm({ onSuccess, onCancel, pedidoId, readOnly = fals
               </Select>
             </FormField>
           </div>
-          <FormField label="Número" hint={isEditing ? undefined : 'Gerado automaticamente ao salvar'}>
-            <Input value={numeroPedido ?? 'Automático'} disabled readOnly className="text-gray-400" />
+          <FormField label="Número" hint="Gerado automaticamente ao salvar">
+            <Input value="Automático" disabled readOnly className="text-gray-400" />
           </FormField>
         </div>
 
-        {/* Cliente + Vendedor */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <div className="lg:col-span-2">
-            <FormField label="Cliente" error={errors.pessoaId?.message}
+            <FormField label="Cliente / Destinatário" error={errors.pessoaId?.message}
               hint="Digite o nome, CPF/CNPJ ou e-mail. Em branco = consumidor final (só NFC-e)">
               <BuscaInput<Pessoa>
                 value={watch('pessoaId') ?? ''}
@@ -536,7 +427,6 @@ export function PedidoVendaForm({ onSuccess, onCancel, pedidoId, readOnly = fals
           </FormField>
         </div>
 
-        {/* Atalhos do cliente (dados, últimas vendas, limite de crédito) */}
         {clienteSel && (
           <div className="-mt-1">
             <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
@@ -548,7 +438,6 @@ export function PedidoVendaForm({ onSuccess, onCancel, pedidoId, readOnly = fals
                 </button>
               ))}
             </div>
-
             {clientePanel === 'dados' && (
               <div className="mt-2 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-xs space-y-1">
                 <p className="text-sm font-semibold text-gray-800">
@@ -572,24 +461,16 @@ export function PedidoVendaForm({ onSuccess, onCancel, pedidoId, readOnly = fals
           </div>
         )}
 
-        {/* Local de entrega (quando diferente do cadastro) */}
         <div className="rounded-lg border border-gray-200 px-4 py-3">
           <label className="flex items-center gap-2 text-sm font-medium text-gray-700 cursor-pointer">
-            <input
-              type="checkbox"
-              {...register('entregaDiferente')}
-              className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-            />
+            <input type="checkbox" {...register('entregaDiferente')}
+              className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
             Entregar em endereço diferente do cadastro
           </label>
           {watchEntregaDif && (
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mt-3">
               <FormField label="CEP">
-                <Input
-                  {...cepEntregaReg}
-                  onBlur={e => { cepEntregaReg.onBlur(e); buscarCepEntrega(e.target.value) }}
-                  placeholder="00000-000"
-                />
+                <Input {...cepEntregaReg} onBlur={e => { cepEntregaReg.onBlur(e); buscarCepEntrega(e.target.value) }} placeholder="00000-000" />
               </FormField>
               <div className="lg:col-span-2">
                 <FormField label="Logradouro">
@@ -599,27 +480,22 @@ export function PedidoVendaForm({ onSuccess, onCancel, pedidoId, readOnly = fals
               <FormField label="Número">
                 <Input {...register('entregaNumero')} placeholder="Nº" />
               </FormField>
-              <FormField label="Bairro">
-                <Input {...register('entregaBairro')} />
-              </FormField>
+              <FormField label="Bairro"><Input {...register('entregaBairro')} /></FormField>
               <div className="lg:col-span-2">
                 <FormField label="Complemento">
                   <Input {...register('entregaComplemento')} placeholder="Bloco, sala, referência..." />
                 </FormField>
               </div>
-              <FormField label="Município">
-                <Input {...register('entregaMunicipio')} />
-              </FormField>
+              <FormField label="Município"><Input {...register('entregaMunicipio')} /></FormField>
               <FormField label="UF">
                 <Input {...register('entregaUf')} maxLength={2} className="uppercase" placeholder="UF" />
               </FormField>
             </div>
           )}
         </div>
-
       </section>
 
-      {/* ── Itens / Impostos (abas) ─────────────────────────────────────── */}
+      {/* ── Itens / Impostos ──────────────────────────────────────────── */}
       <section>
         <div className="flex items-center gap-4 border-b border-gray-200 mb-3">
           <button type="button" tabIndex={-1} onClick={() => setItemTab('itens')}
@@ -634,106 +510,89 @@ export function PedidoVendaForm({ onSuccess, onCancel, pedidoId, readOnly = fals
         </div>
 
         {itemTab === 'itens' && (
-        <div className="border rounded-xl">
-          {/* Cabeçalho */}
-          <div className="flex items-center gap-2 px-3 py-2 border-b bg-gray-50 text-xs font-medium text-gray-500">
-            <div className={`${col.num} text-center`}>Nº</div>
-            <div className="flex-1">Descrição</div>
-            <div className={col.sku}>Código (SKU)</div>
-            <div className={`${col.qtd} text-center`}>Qtde</div>
-            <div className={`${col.un} text-center`}>UN</div>
-            <div className={`${col.preco} text-right`}>Preço un</div>
-            <div className={`${col.desc} text-right`}>Desconto</div>
-            <div className={`${col.total} text-right`}>Total</div>
-            <div className={col.acao} />
-          </div>
-
-          {/* Linhas */}
-          <div className="divide-y" ref={itensRef}>
-            {fields.map((field, index) => {
-              const item = watchItens?.[index]
-              const subtotalLinha = (Number(item?.quantidade ?? 0) * Number(item?.precoUnitario ?? 0)) - Number(item?.desconto ?? 0)
-              const prod = item?.produtoId ? produtosSel[item.produtoId] : undefined
-              return (
-                <div key={field.id} className="px-3 py-2">
-                  <div className="flex items-center gap-2">
-                    <div className={`${col.num} text-center text-xs text-gray-400 tabular-nums`}>{index + 1}</div>
-                    <div className="flex-1" data-produto-cell>
-                      <BuscaInput<Produto>
-                        value={item?.produtoId ?? ''}
-                        endpoint="/produtos"
-                        params={{ tipo: 'PRODUTO_ACABADO' }}
-                        queryKeyBase="produtos-venda-busca"
-                        getId={p => p.id}
-                        getLabel={p => p.nome}
-                        getSub={p => p.ncm ? `NCM ${p.ncm}` : 'sem NCM'}
-                        placeholder="Pesquise por descrição, código (SKU) ou GTIN..."
-                        error={!!errors.itens?.[index]?.produtoId}
-                        onSelect={p => {
-                          setValue(`itens.${index}.produtoId`, p?.id ?? '', { shouldValidate: true })
-                          if (p) {
-                            setProdutosSel(m => ({ ...m, [p.id]: p }))
-                            setValue(`itens.${index}.precoUnitario`, Number(p.precoVenda) || 0)
-                          }
-                        }}
-                      />
+          <div className="border rounded-xl">
+            <div className="flex items-center gap-2 px-3 py-2 border-b bg-gray-50 text-xs font-medium text-gray-500">
+              <div className={`${col.num} text-center`}>Nº</div>
+              <div className="flex-1">Descrição</div>
+              <div className={col.sku}>Código (SKU)</div>
+              <div className={`${col.qtd} text-center`}>Qtde</div>
+              <div className={`${col.un} text-center`}>UN</div>
+              <div className={`${col.preco} text-right`}>Preço un</div>
+              <div className={`${col.desc} text-right`}>Desconto</div>
+              <div className={`${col.total} text-right`}>Total</div>
+              <div className={col.acao} />
+            </div>
+            <div className="divide-y" ref={itensRef}>
+              {fields.map((field, index) => {
+                const item = watchItens?.[index]
+                const subtotalLinha = (Number(item?.quantidade ?? 0) * Number(item?.precoUnitario ?? 0)) - Number(item?.desconto ?? 0)
+                const prod = item?.produtoId ? produtosSel[item.produtoId] : undefined
+                return (
+                  <div key={field.id} className="px-3 py-2">
+                    <div className="flex items-center gap-2">
+                      <div className={`${col.num} text-center text-xs text-gray-400 tabular-nums`}>{index + 1}</div>
+                      <div className="flex-1" data-produto-cell>
+                        <BuscaInput<Produto>
+                          value={item?.produtoId ?? ''}
+                          endpoint="/produtos"
+                          params={{ tipo: 'PRODUTO_ACABADO' }}
+                          queryKeyBase="produtos-venda-busca"
+                          getId={p => p.id}
+                          getLabel={p => p.nome}
+                          getSub={p => p.ncm ? `NCM ${p.ncm}` : 'sem NCM'}
+                          placeholder="Pesquise por descrição, código (SKU) ou GTIN..."
+                          error={!!errors.itens?.[index]?.produtoId}
+                          onSelect={p => {
+                            setValue(`itens.${index}.produtoId`, p?.id ?? '', { shouldValidate: true })
+                            if (p) {
+                              setProdutosSel(m => ({ ...m, [p.id]: p }))
+                              setValue(`itens.${index}.precoUnitario`, Number(p.precoVenda) || 0)
+                            }
+                          }}
+                        />
+                      </div>
+                      <div className={`${col.sku} text-xs text-gray-500 font-mono truncate`}>{prod?.codigo ?? '—'}</div>
+                      <div className={col.qtd}>
+                        <Input {...register(`itens.${index}.quantidade`)} type="number" step="0.001" min="0.001"
+                          placeholder="1" className="text-center" error={!!errors.itens?.[index]?.quantidade} />
+                      </div>
+                      <div className={`${col.un} text-center text-xs text-gray-500 tabular-nums`}>
+                        {prod?.unidadeComercial || prod?.unidadeMedida || '—'}
+                      </div>
+                      <div className={col.preco}>
+                        <Controller control={control} name={`itens.${index}.precoUnitario`} render={({ field }) => (
+                          <CurrencyInput value={field.value} onChange={field.onChange} onBlur={field.onBlur}
+                            error={!!errors.itens?.[index]?.precoUnitario} />
+                        )} />
+                      </div>
+                      <div className={col.desc}>
+                        <Controller control={control} name={`itens.${index}.desconto`} render={({ field }) => (
+                          <CurrencyInput value={field.value} onChange={field.onChange} onBlur={field.onBlur}
+                            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); adicionarItem() } }} />
+                        )} />
+                      </div>
+                      <div className={`${col.total} text-right text-xs font-semibold text-gray-700 tabular-nums`}>
+                        {subtotalLinha > 0 ? fmt(subtotalLinha) : '—'}
+                      </div>
+                      <button type="button" onClick={() => remove(index)} disabled={fields.length === 1} tabIndex={-1}
+                        className={`${col.acao} flex items-center justify-center text-gray-400 hover:text-red-500 disabled:opacity-30`}>
+                        <Trash2 size={15} />
+                      </button>
                     </div>
-                    <div className={`${col.sku} text-xs text-gray-500 font-mono truncate`}>
-                      {prod?.codigo ?? '—'}
-                    </div>
-                    <div className={col.qtd}>
-                      <Input
-                        {...register(`itens.${index}.quantidade`)}
-                        type="number" step="0.001" min="0.001" placeholder="1"
-                        className="text-center"
-                        error={!!errors.itens?.[index]?.quantidade}
-                      />
-                    </div>
-                    <div className={`${col.un} text-center text-xs text-gray-500 tabular-nums`}>
-                      {prod?.unidadeComercial || prod?.unidadeMedida || '—'}
-                    </div>
-                    <div className={col.preco}>
-                      <Controller control={control} name={`itens.${index}.precoUnitario`} render={({ field }) => (
-                        <CurrencyInput value={field.value} onChange={field.onChange} onBlur={field.onBlur} error={!!errors.itens?.[index]?.precoUnitario} />
-                      )} />
-                    </div>
-                    <div className={col.desc}>
-                      <Controller control={control} name={`itens.${index}.desconto`} render={({ field }) => (
-                        <CurrencyInput value={field.value} onChange={field.onChange} onBlur={field.onBlur}
-                          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); adicionarItem() } }} />
-                      )} />
-                    </div>
-                    <div className={`${col.total} text-right text-xs font-semibold text-gray-700 tabular-nums`}>
-                      {subtotalLinha > 0 ? fmt(subtotalLinha) : '—'}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => remove(index)}
-                      disabled={fields.length === 1}
-                      tabIndex={-1}
-                      className={`${col.acao} flex items-center justify-center text-gray-400 hover:text-red-500 disabled:opacity-30`}
-                    >
-                      <Trash2 size={15} />
-                    </button>
+                    {prod && !prod.ncm && (
+                      <p className="mt-1 flex items-center gap-1 text-[11px] text-amber-600">
+                        <AlertTriangle size={12} /> Produto sem NCM — necessário para emissão fiscal.
+                      </p>
+                    )}
                   </div>
-                  {prod && !prod.ncm && (
-                    <p className="mt-1 flex items-center gap-1 text-[11px] text-amber-600">
-                      <AlertTriangle size={12} /> Produto sem NCM — necessário para emissão fiscal.
-                    </p>
-                  )}
-                </div>
-              )
-            })}
+                )
+              })}
+            </div>
+            <button type="button" onClick={adicionarItem}
+              className="w-full flex items-center justify-center gap-2 py-2 border-t text-sm text-primary-600 hover:bg-primary-50 transition rounded-b-xl">
+              <Plus size={15} /> Adicionar Item
+            </button>
           </div>
-
-          <button
-            type="button"
-            onClick={adicionarItem}
-            className="w-full flex items-center justify-center gap-2 py-2 border-t text-sm text-primary-600 hover:bg-primary-50 transition rounded-b-xl"
-          >
-            <Plus size={15} /> Adicionar Item
-          </button>
-        </div>
         )}
 
         {itemTab === 'impostos' && (
@@ -769,13 +628,13 @@ export function PedidoVendaForm({ onSuccess, onCancel, pedidoId, readOnly = fals
               })}
             </div>
             <p className="px-3 py-2 text-[11px] text-gray-400 border-t">
-              Impostos estimados pela natureza de operação ({naturezaSel?.descricao ?? '—'}) sobre o valor de cada item. Cálculo definitivo na emissão da NF-e.
+              Impostos estimados pela natureza de operação ({naturezaSel?.descricao ?? '—'}). Cálculo definitivo na emissão da NF-e.
             </p>
           </div>
         )}
       </section>
 
-      {/* ── Transporte ──────────────────────────────────────────────────── */}
+      {/* ── Transporte ────────────────────────────────────────────────── */}
       <section>
         <h3 className="text-sm font-semibold text-gray-700 mb-3">Transporte</h3>
         <div className="grid grid-cols-4 gap-3">
@@ -797,43 +656,36 @@ export function PedidoVendaForm({ onSuccess, onCancel, pedidoId, readOnly = fals
           </FormField>
         </div>
         <div className="grid grid-cols-4 gap-3 mt-3">
-          <FormField label="Placa">
-            <Input {...register('veiculoPlaca')} placeholder="ABC1D23" />
-          </FormField>
-          <FormField label="UF">
-            <Input {...register('veiculoUf')} maxLength={2} placeholder="UF" className="uppercase" />
-          </FormField>
-          <FormField label="Volumes (qtd)">
-            <Input {...register('volumesQtde')} type="number" min="0" step="1" placeholder="0" />
-          </FormField>
-          <FormField label="Espécie">
-            <Input {...register('volumesEspecie')} placeholder="Caixa, fardo..." />
-          </FormField>
+          <FormField label="Placa"><Input {...register('veiculoPlaca')} placeholder="ABC1D23" /></FormField>
+          <FormField label="UF"><Input {...register('veiculoUf')} maxLength={2} placeholder="UF" className="uppercase" /></FormField>
+          <FormField label="Volumes (qtd)"><Input {...register('volumesQtde')} type="number" min="0" step="1" placeholder="0" /></FormField>
+          <FormField label="Espécie"><Input {...register('volumesEspecie')} placeholder="Caixa, fardo..." /></FormField>
         </div>
         <div className="grid grid-cols-4 gap-3 mt-3">
-          <FormField label="Peso Bruto (kg)">
-            <Input {...register('pesoBruto')} type="number" min="0" step="0.001" placeholder="0,000" />
-          </FormField>
-          <FormField label="Peso Líquido (kg)">
-            <Input {...register('pesoLiquido')} type="number" min="0" step="0.001" placeholder="0,000" />
-          </FormField>
+          <FormField label="Peso Bruto (kg)"><Input {...register('pesoBruto')} type="number" min="0" step="0.001" placeholder="0,000" /></FormField>
+          <FormField label="Peso Líquido (kg)"><Input {...register('pesoLiquido')} type="number" min="0" step="0.001" placeholder="0,000" /></FormField>
         </div>
       </section>
 
-      {/* ── Detalhes da venda ───────────────────────────────────────────── */}
+      {/* ── Detalhes da NF-e ──────────────────────────────────────────── */}
       <section>
-        <h3 className="text-sm font-semibold text-gray-700 mb-3">Detalhes da venda</h3>
+        <h3 className="text-sm font-semibold text-gray-700 mb-3">Detalhes da NF-e</h3>
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <FormField label="Data da Venda" error={errors.dataEmissao?.message} required>
+          <FormField label="Data de Emissão" error={errors.dataEmissao?.message} required>
             <Input type="date" {...register('dataEmissao')} error={!!errors.dataEmissao} />
           </FormField>
           <FormField label="Previsão de Entrega">
             <Input type="date" {...register('previsaoEntrega')} />
           </FormField>
-          <FormField label="Validade da Proposta">
-            <Input type="date" {...register('validadeProposta')} />
+          <FormField label="Finalidade">
+            <Select {...register('finNFe')}>
+              <option value={1}>1 — Normal</option>
+              <option value={2}>2 — Complementar</option>
+              <option value={3}>3 — Ajuste</option>
+              <option value={4}>4 — Devolução/Retorno</option>
+            </Select>
           </FormField>
-          <FormField label="Nº do Pedido do Cliente" error={errors.pedidoCliente?.message}>
+          <FormField label="Nº do Pedido do Cliente">
             <Input {...register('pedidoCliente')} placeholder="OC / referência" />
           </FormField>
         </div>
@@ -861,23 +713,19 @@ export function PedidoVendaForm({ onSuccess, onCancel, pedidoId, readOnly = fals
         </div>
       </section>
 
-      {/* ── Pagamento / Cobrança (parcelas) ─────────────────────────────── */}
+      {/* ── Cobrança ──────────────────────────────────────────────────── */}
       <section>
         <h3 className="text-sm font-semibold text-gray-700 mb-3">Cobrança</h3>
         <div className="flex items-end gap-2 mb-3">
           <div className="flex-1">
             <label className="block text-sm font-medium text-gray-700 mb-1">Condição de pagamento</label>
-            <Input
-              value={condicao}
-              onChange={e => setCondicao(e.target.value)}
-              placeholder="Ex.: à vista, 30 60, 2x, 15 +2x"
-            />
+            <Input value={condicao} onChange={e => setCondicao(e.target.value)}
+              placeholder="Ex.: à vista, 30 60, 2x, 15 +2x" />
           </div>
           <Button type="button" variant="secondary" onClick={gerarParcelas}>
             <RotateCcw size={14} className="mr-1.5" /> Gerar parcelas
           </Button>
         </div>
-
         <div className="border rounded-xl">
           <div className="flex items-center gap-2 px-3 py-2 border-b bg-gray-50 text-xs font-medium text-gray-500">
             <div className="w-10 text-center">Nº</div>
@@ -891,8 +739,7 @@ export function PedidoVendaForm({ onSuccess, onCancel, pedidoId, readOnly = fals
               <div key={idx} className="flex items-center gap-2 px-3 py-2">
                 <div className="w-10 text-center text-xs text-gray-500 tabular-nums">{idx + 1}</div>
                 <div className="w-44">
-                  <Input type="date" value={p.vencimento}
-                    onChange={e => setParcela(idx, 'vencimento', e.target.value)} />
+                  <Input type="date" value={p.vencimento} onChange={e => setParcela(idx, 'vencimento', e.target.value)} />
                 </div>
                 <div className="w-36">
                   <CurrencyInput value={p.valor} onChange={v => setParcela(idx, 'valor', v)} />
@@ -930,7 +777,7 @@ export function PedidoVendaForm({ onSuccess, onCancel, pedidoId, readOnly = fals
         )}
       </section>
 
-      {/* ── Totais ──────────────────────────────────────────────────────── */}
+      {/* ── Totais ────────────────────────────────────────────────────── */}
       <section>
         <div className="flex items-center gap-2 mb-3">
           <h3 className="text-sm font-semibold text-gray-700">Totais</h3>
@@ -950,7 +797,7 @@ export function PedidoVendaForm({ onSuccess, onCancel, pedidoId, readOnly = fals
             { label: 'Valor ICMS', txt: fmt(imp.vICMS) },
             { label: 'Valor PIS', txt: fmt(imp.vPIS) },
             { label: 'Valor COFINS', txt: fmt(imp.vCOFINS) },
-            { label: 'Total da venda', txt: fmt(totalFinal), strong: true },
+            { label: 'Total da NF-e', txt: fmt(totalFinal), strong: true },
           ].map(c => (
             <div key={c.label} className={`rounded-lg border px-3 py-2 ${c.strong ? 'border-primary-200 bg-primary-50' : 'border-gray-200 bg-gray-50'}`}>
               <p className="text-[10px] uppercase tracking-wide text-gray-400">{c.label}</p>
@@ -965,7 +812,7 @@ export function PedidoVendaForm({ onSuccess, onCancel, pedidoId, readOnly = fals
         </p>
       </section>
 
-      {/* ── Prontidão para emissão de NF-e ──────────────────────────────── */}
+      {/* ── Prontidão para emissão ────────────────────────────────────── */}
       <div className={prontoParaNFe
         ? 'rounded-xl border border-green-200 bg-green-50 px-4 py-3'
         : 'rounded-xl border border-amber-200 bg-amber-50 px-4 py-3'}>
@@ -982,31 +829,26 @@ export function PedidoVendaForm({ onSuccess, onCancel, pedidoId, readOnly = fals
               {pendencias.map((p, i) => <li key={`p${i}`}>{p}</li>)}
               {itensSemFiscal.map((p, i) => <li key={`i${i}`}>{p}</li>)}
             </ul>
-            <p className="ml-6 text-[11px] text-amber-600/80">O pedido pode ser salvo; a emissão fica bloqueada até resolver.</p>
+            <p className="ml-6 text-[11px] text-amber-600/80">O rascunho pode ser salvo; a transmissão fica bloqueada até resolver.</p>
           </div>
         )}
       </div>
 
-      <FormField label="Observação" error={errors.observacao?.message}>
-        <Textarea {...register('observacao')} placeholder="Informações complementares (vão para a NF-e)..." />
+      <FormField label="Observação / Informações Complementares (infCpl)" error={errors.observacao?.message}>
+        <Textarea {...register('observacao')} placeholder="Informações complementares (aparecem no DANFE)..." />
       </FormField>
-      </fieldset>
 
       {mutation.isError && (
         <p className="text-sm text-red-600 bg-red-50 border border-red-200 px-3 py-2 rounded-lg">
-          {(mutation.error as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Erro ao criar pedido. Verifique os dados e tente novamente.'}
+          {(mutation.error as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Erro ao criar NF-e. Verifique os dados e tente novamente.'}
         </p>
       )}
 
       <div className="flex justify-end gap-3 pt-2 border-t border-gray-100">
-        <Button type="button" variant="secondary" onClick={onCancel}>
-          {readOnly ? 'Voltar' : 'Cancelar'}
+        <Button type="button" variant="secondary" onClick={onClose}>Cancelar</Button>
+        <Button type="submit" loading={mutation.isPending}>
+          Criar NF-e Pendente — {fmt(totalFinal)}
         </Button>
-        {!readOnly && (
-          <Button type="submit" loading={mutation.isPending}>
-            {isEditing ? 'Salvar Alterações' : 'Criar Pedido'} — {fmt(totalFinal)}
-          </Button>
-        )}
       </div>
     </Form>
   )

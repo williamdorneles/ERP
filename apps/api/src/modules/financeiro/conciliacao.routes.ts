@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { prisma } from '@erp/database'
 import { requirePerfil } from '../../plugins/auth.plugin.js'
-import { calcularSaldoBaixa, statusTituloPorParcelas, montarLinhasEncargo, somaEncargos } from './baixa.js'
+import { calcularSaldoBaixa, statusTituloPorParcelas, montarLinhasEncargo, somaEncargos, LABEL_CONTA } from './baixa.js'
 import { z } from 'zod'
 
 const ConfirmarSchema = z.object({
@@ -25,12 +25,6 @@ const ConfirmarLoteSchema = z.object({
     parcelaId: z.string().uuid(),
   })).min(1).max(500),
 })
-
-const LABEL_CONTA: Record<string, string> = {
-  CONTA_TARIFA_BANCARIA: 'Tarifa bancária',
-  CONTA_JUROS_PAGOS: 'Juros/multa pagos',
-  CONTA_JUROS_RECEBIDOS: 'Juros/multa recebidos',
-}
 
 // ── Score: máx 200pts ─────────────────────────────────────────────────────────
 // Valor  (0–100): coincidência exata → 100, ±2% → 70, ±10% → 30
@@ -102,7 +96,7 @@ async function executarConciliacao(p: ConciliarParams): Promise<ConciliarResult>
     prisma.transacaoFinanceira.findUnique({ where: { id: transacaoId } }),
     prisma.parcelaFinanceira.findUnique({
       where: { id: parcelaId },
-      include: { titulo: { select: { id: true, tipo: true } } },
+      include: { titulo: { select: { id: true, tipo: true, contaFinanceiraId: true } } },
     }),
   ])
 
@@ -116,6 +110,10 @@ async function executarConciliacao(p: ConciliarParams): Promise<ConciliarResult>
   if (tipoTitulo !== tipoEsperado) {
     return { ok: false, status: 400, error: 'Tipo incompatível: débito deve ser conciliado com título a Pagar, crédito com título a Receber.' }
   }
+
+  // Classificação DRE do principal: a conta do título manda; se ele não tiver, mantém
+  // a classificação que a transação do extrato já tinha (regra/histórico).
+  const contaDre = parcela.titulo.contaFinanceiraId ?? tx.contaFinanceiraId ?? null
 
   // Encargos embutidos no valor do banco → rateados para contas de DRE
   const linhasEncargo = montarLinhasEncargo(tipoTitulo, { tarifa, juros, multa })
@@ -182,7 +180,9 @@ async function executarConciliacao(p: ConciliarParams): Promise<ConciliarResult>
       where: { id: transacaoId },
       data: {
         parcelaFinanceiraId: parcelaId,
-        status: 'REVISADO',
+        contaFinanceiraId: contaDre,
+        // Sem conta de DRE resolvida → PENDENTE para entrar na fila de classificação
+        status: contaDre ? 'REVISADO' : 'PENDENTE',
         fonteClassificacao: 'CONCILIACAO',
         confiancaClassificacao: 1.0,
         ...(totalEncargos > 0 ? { valor: principalBanco } : {}),

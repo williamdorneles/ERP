@@ -21,6 +21,13 @@ export function calcularSaldoBaixa(valorParcela: number, valorPago: number): Res
 
 const round2 = (n: number) => Number(n.toFixed(2))
 
+/** Rótulos das contas de encargo (mensagens de erro e descrição das linhas de DRE). */
+export const LABEL_CONTA: Record<string, string> = {
+  CONTA_TARIFA_BANCARIA: 'Tarifa bancária',
+  CONTA_JUROS_PAGOS: 'Juros/multa pagos',
+  CONTA_JUROS_RECEBIDOS: 'Juros/multa recebidos',
+}
+
 export interface LinhaEncargo {
   /** Chave de configuração da conta de DRE onde o encargo é lançado. */
   chaveConta: string

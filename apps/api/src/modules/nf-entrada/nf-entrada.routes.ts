@@ -3,7 +3,6 @@ import { prisma } from '@erp/database'
 import { requirePerfil } from '../../plugins/auth.plugin.js'
 import { parseNFe } from './nfe.parser.js'
 import { consultarDistribuicao } from './sefaz-distribuicao.service.js'
-import { propagarCustoComponente } from '../produtos/custo-bom.service.js'
 import { converterQtde, custoPorUnidadeEstoque } from './conversao.js'
 import { z } from 'zod'
 
@@ -230,13 +229,17 @@ export async function nfEntradaRoutes(app: FastifyInstance) {
     let fornecedorId = data.fornecedorId || null
     if (!fornecedorId && data.fornecedorCnpj) {
       const cnpjLimpo = data.fornecedorCnpj.replace(/\D/g, '')
-      // Verifica se já existe (pode ter sido criado entre o parse-xml e o salvar)
-      const existente = await prisma.pessoa.findFirst({
-        where: { documento: { contains: cnpjLimpo } },
-        select: { id: true },
+      // Pesquisa pelo CNPJ (dígitos). Se já existe no cadastro, reusa — não cria de novo.
+      const existente = await prisma.pessoa.findUnique({
+        where: { documento: cnpjLimpo },
+        select: { id: true, tipo: true },
       })
       if (existente) {
         fornecedorId = existente.id
+        // Se era só cliente, passa a ser também fornecedor (AMBOS)
+        if (existente.tipo === 'CLIENTE') {
+          await prisma.pessoa.update({ where: { id: existente.id }, data: { tipo: 'AMBOS' } })
+        }
       } else {
         // Gera código sequencial para a Pessoa
         const ultima = await prisma.pessoa.findFirst({ orderBy: { codigo: 'desc' }, select: { codigo: true } })
@@ -549,9 +552,6 @@ export async function nfEntradaRoutes(app: FastifyInstance) {
             observacao:  `Formação de custo NF ${nf.numero || id}`,
           },
         })
-
-        // Propaga o novo custo para produtos com BOM que usam este como componente
-        await propagarCustoComponente(tx, item.produtoId)
       }
       await tx.nfEntrada.update({ where: { id }, data: { custoFormado: true } })
     })
@@ -770,9 +770,6 @@ export async function nfEntradaRoutes(app: FastifyInstance) {
             observacao:  `Estorno NF ${nf.numero || id}`,
           },
         })
-
-        // Propaga a reversão de custo para produtos com BOM que usam este como componente
-        await propagarCustoComponente(tx, item.produtoId)
       }
 
       await tx.nfEntrada.update({

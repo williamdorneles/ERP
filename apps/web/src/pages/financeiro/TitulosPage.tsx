@@ -72,7 +72,9 @@ interface Pessoa { id: string; nome: string; documento: string }
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 const fmt = (v: number | string) => Number(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
-const fmtDate = (s: string) => new Date(s + (s.includes('T') ? '' : 'T12:00:00')).toLocaleDateString('pt-BR')
+// Datas de vencimento são "date-only" (@db.Date). Normaliza pegando só a parte da data
+// e fixando ao meio-dia local, evitando o recuo de 1 dia por fuso (UTC → UTC-3).
+const fmtDate = (s: string) => new Date(s.slice(0, 10) + 'T12:00:00').toLocaleDateString('pt-BR')
 const today = () => new Date().toISOString().split('T')[0]
 const primeiroDiaMes = () => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().split('T')[0] }
 const ultimoDiaMes  = () => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth() + 1, 0).toISOString().split('T')[0] }
@@ -142,15 +144,17 @@ function SummaryCards({ resumo, tipo }: { resumo: Resumo; tipo: 'PAGAR' | 'RECEB
 // ── Baixa Modal ────────────────────────────────────────────────────────────
 
 function ModalBaixa({
-  parcela, tituloId, contas, onClose
+  parcela, tituloId, tipoTitulo, contaFinanceiraInicial, contas, onClose
 }: {
-  parcela: Parcela; tituloId: string; contas: ContaBancaria[]; onClose: () => void
+  parcela: Parcela; tituloId: string; tipoTitulo: 'PAGAR' | 'RECEBER'
+  contaFinanceiraInicial?: string; contas: ContaBancaria[]; onClose: () => void
 }) {
   const qc = useQueryClient()
   const valorOriginal = Number(parcela.valor)
   const [form, setForm] = useState({
     dataBaixa: today(),
     contaBancariaId: contas[0]?.id ?? '',
+    contaFinanceiraId: contaFinanceiraInicial ?? '',
     valorPrincipal: valorOriginal.toFixed(2),
     juros: '',
     multa: '',
@@ -158,6 +162,16 @@ function ModalBaixa({
     vencimentoRestante: parcela.vencimento,
     observacao: '',
   })
+
+  // Plano de contas (DRE) — analíticas relevantes ao tipo do título
+  const { data: contasDre = [] } = useQuery<Array<{ id: string; codigo: string; nome: string; tipo: string; isAnalitica: boolean }>>({
+    queryKey: ['contas-financeiras'],
+    queryFn: () => api.get('/financeiro/contas').then(r => r.data),
+  })
+  const tiposRelevantes = tipoTitulo === 'PAGAR'
+    ? ['CUSTO', 'DESPESA', 'NAO_OPERACIONAL']
+    : ['RECEITA', 'NAO_OPERACIONAL']
+  const opcoesDre = contasDre.filter(c => c.isAnalitica && tiposRelevantes.includes(c.tipo))
 
   const principal = Math.max(0, Number(form.valorPrincipal) || 0)
   const encargos = (Number(form.juros) || 0) + (Number(form.multa) || 0) + (Number(form.taxas) || 0)
@@ -172,6 +186,7 @@ function ModalBaixa({
       dataBaixa: form.dataBaixa,
       valorPago: Number(totalPago.toFixed(2)),
       contaBancariaId: form.contaBancariaId,
+      contaFinanceiraId: form.contaFinanceiraId || undefined,
       juros: Number(form.juros) || undefined,
       multa: Number(form.multa) || undefined,
       taxas: Number(form.taxas) || undefined,
@@ -230,6 +245,20 @@ function ModalBaixa({
                 {contas.map(c => <option key={c.id} value={c.id}>{c.nome}{c.isCaixa ? ' (Caixa)' : ''}</option>)}
               </select>
             </div>
+          </div>
+
+          {/* Plano de contas (DRE) — vem do título ou o usuário informa */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Plano de Contas (DRE)
+              {!form.contaFinanceiraId && <span className="ml-2 text-xs text-amber-600 font-normal">não classificado — defina para entrar no DRE</span>}
+            </label>
+            <select value={form.contaFinanceiraId}
+              onChange={e => setForm(f => ({ ...f, contaFinanceiraId: e.target.value }))}
+              className="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary-500 focus:border-transparent">
+              <option value="">— Sem classificação (fica pendente) —</option>
+              {opcoesDre.map(c => <option key={c.id} value={c.id}>{c.codigo} · {c.nome}</option>)}
+            </select>
           </div>
 
           {/* Valor pago */}
@@ -322,41 +351,34 @@ function ModalBaixa({
   )
 }
 
-// ── Titulo Row ─────────────────────────────────────────────────────────────
+// ── Parcela Row (uma linha por parcela, ordenada por vencimento) ─────────────
 
-function TituloRow({
-  titulo, contas, onCancelar
+function ParcelaRow({
+  parcela, titulo, contas, onCancelar
 }: {
-  titulo: Titulo; contas: ContaBancaria[]; onCancelar: (id: string) => void
+  parcela: Parcela; titulo: Titulo; contas: ContaBancaria[]; onCancelar: (id: string) => void
 }) {
   const qc = useQueryClient()
-  const [baixando, setBaixando] = useState<Parcela | null>(null)
-  const [estornando, setEstornando] = useState<Parcela | null>(null)
+  const [baixando, setBaixando] = useState(false)
+  const [estornando, setEstornando] = useState(false)
 
   const isPagar = titulo.tipo === 'PAGAR'
-  const abertas = titulo.parcelas
-    .filter(p => p.status === 'ABERTO')
-    .sort((a, b) => new Date(a.vencimento).getTime() - new Date(b.vencimento).getTime())
-  const proxima = abertas[0] ?? null
-  const vencidas = abertas.filter(p => isVencido(p.vencimento))
-
-  // Última parcela quitada (candidata ao estorno)
-  const ultimaQuitada = titulo.parcelas
-    .filter(p => p.status === 'QUITADO')
-    .sort((a, b) => b.numero - a.numero)[0] ?? null
+  const totalParcelas = titulo.parcelas.length
+  const vencida = parcela.status === 'ABERTO' && isVencido(parcela.vencimento)
+  const tituloCancelavel = titulo.status !== 'CANCELADO' && titulo.status !== 'QUITADO'
 
   const estornar = useMutation({
-    mutationFn: (p: Parcela) => api.patch(`/titulos/${titulo.id}/parcelas/${p.id}/estornar`),
+    mutationFn: () => api.patch(`/titulos/${titulo.id}/parcelas/${parcela.id}/estornar`),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['titulos'] })
       qc.invalidateQueries({ queryKey: ['titulos-resumo'] })
-      setEstornando(null)
+      setEstornando(false)
     },
   })
 
   return (
     <>
-      <tr className={clsx('hover:bg-gray-50 transition', titulo.status === 'CANCELADO' && 'opacity-50')}>
+      <tr className={clsx('hover:bg-gray-50 transition', parcela.status === 'CANCELADO' && 'opacity-50')}>
         <td className="px-4 py-3">
           <div className={clsx('w-7 h-7 rounded-full flex items-center justify-center shrink-0', isPagar ? 'bg-red-100' : 'bg-green-100')}>
             {isPagar ? <TrendingDown size={14} className="text-red-600" /> : <TrendingUp size={14} className="text-green-600" />}
@@ -373,58 +395,50 @@ function TituloRow({
         </td>
         <td className="px-4 py-3">
           <span className="text-sm text-gray-700 tabular-nums">
-            {abertas.length}/{titulo.parcelas.length}
+            {parcela.numero}/{totalParcelas}
           </span>
-          {vencidas.length > 0 && (
-            <span className="flex items-center gap-1 text-xs text-red-500 mt-0.5">
-              <AlertTriangle size={11} /> {vencidas.length} vencida(s)
-            </span>
+          {parcela.parcelaOrigemId && (
+            <span className="ml-1.5 text-xs text-orange-600 bg-orange-50 px-1.5 py-0.5 rounded font-medium">saldo</span>
           )}
         </td>
         <td className="px-4 py-3">
-          {proxima ? (
-            <div>
-              <span className={clsx('text-sm tabular-nums', isVencido(proxima.vencimento) ? 'text-red-600 font-medium' : 'text-gray-600')}>
-                {fmtDate(proxima.vencimento)}
-              </span>
-              {proxima.parcelaOrigemId && (
-                <span className="ml-1.5 text-xs text-orange-600 bg-orange-50 px-1.5 py-0.5 rounded font-medium">saldo</span>
-              )}
-            </div>
-          ) : (
-            <span className="text-sm text-gray-400">—</span>
-          )}
+          <span className={clsx('text-sm tabular-nums', vencida ? 'text-red-600 font-medium' : 'text-gray-600')}>
+            {fmtDate(parcela.vencimento)}
+          </span>
         </td>
         <td className="px-4 py-3 text-right">
           <span className={clsx('font-semibold tabular-nums', isPagar ? 'text-red-700' : 'text-green-700')}>
-            {fmt(titulo.total)}
+            {fmt(parcela.valor)}
           </span>
+          {totalParcelas > 1 && (
+            <p className="text-xs text-gray-400 tabular-nums mt-0.5">total {fmt(titulo.total)}</p>
+          )}
         </td>
-        <td className="px-4 py-3">{statusBadge(titulo.status)}</td>
+        <td className="px-4 py-3">{statusBadge(parcela.status, parcela.vencimento)}</td>
         <td className="px-4 py-3">
           <div className="flex items-center justify-end gap-1">
-            {ultimaQuitada && (
+            {parcela.status === 'QUITADO' && (
               <button
-                onClick={() => setEstornando(ultimaQuitada)}
+                onClick={() => setEstornando(true)}
                 className="flex items-center gap-1 px-2.5 py-1 text-xs bg-orange-100 text-orange-700 rounded-md hover:bg-orange-200 transition"
-                title="Estornar último pagamento"
+                title="Estornar pagamento"
               >
                 <RefreshCw size={12} /> Estornar
               </button>
             )}
-            {proxima && (
+            {parcela.status === 'ABERTO' && (
               <button
-                onClick={() => setBaixando(proxima)}
+                onClick={() => setBaixando(true)}
                 className="flex items-center gap-1 px-2.5 py-1 text-xs bg-green-600 text-white rounded-md hover:bg-green-700 transition"
               >
                 <CreditCard size={12} /> Baixar
               </button>
             )}
-            {titulo.status !== 'CANCELADO' && titulo.status !== 'QUITADO' && (
+            {parcela.status === 'ABERTO' && tituloCancelavel && (
               <button
                 onClick={() => onCancelar(titulo.id)}
                 className="p-1.5 rounded-lg hover:bg-red-50 text-gray-400 hover:text-red-500 transition"
-                title="Cancelar título"
+                title="Cancelar título (todas as parcelas em aberto)"
               >
                 <Ban size={15} />
               </button>
@@ -435,21 +449,23 @@ function TituloRow({
 
       {baixando && (
         <ModalBaixa
-          parcela={baixando}
+          parcela={parcela}
           tituloId={titulo.id}
+          tipoTitulo={titulo.tipo}
+          contaFinanceiraInicial={titulo.contaFinanceira?.id}
           contas={contas}
-          onClose={() => setBaixando(null)}
+          onClose={() => setBaixando(false)}
         />
       )}
 
       <ConfirmDialog
-        open={!!estornando}
+        open={estornando}
         title="Estornar Pagamento"
-        message={`Estornar a parcela ${estornando?.numero} de ${fmt(estornando?.valor ?? 0)} paga em ${estornando?.dataBaixa ? fmtDate(estornando.dataBaixa) : '—'}? A transação financeira será removida e a parcela voltará para Aberto.`}
+        message={`Estornar a parcela ${parcela.numero} de ${fmt(parcela.valor)} paga em ${parcela.dataBaixa ? fmtDate(parcela.dataBaixa) : '—'}? A transação financeira será removida e a parcela voltará para Aberto.`}
         confirmLabel="Estornar"
         variant="danger"
-        onConfirm={() => estornando && estornar.mutate(estornando)}
-        onCancel={() => setEstornando(null)}
+        onConfirm={() => estornar.mutate()}
+        onCancel={() => setEstornando(false)}
         loading={estornar.isPending}
       />
     </>
@@ -1171,15 +1187,34 @@ export function TitulosPage() {
     onError: (e: Error) => setCancelarErro(e.message),
   })
 
-  const titulos = useMemo(() => {
+  // Lista achatada: uma linha por parcela, ordenada pelo vencimento. Os filtros de
+  // período/status (aplicados no backend ao título) são reaplicados por parcela.
+  const parcelasFlat = useMemo(() => {
     const list = lista?.dados ?? []
-    if (!busca.trim()) return list
-    const q = busca.toLowerCase()
-    return list.filter(t =>
-      t.descricao.toLowerCase().includes(q) ||
-      t.pessoa?.nome.toLowerCase().includes(q)
-    )
-  }, [lista, busca])
+    const q = busca.trim().toLowerCase()
+    const inicio = vencimentoInicio ? new Date(vencimentoInicio + 'T00:00:00') : null
+    const fim = vencimentoFim ? new Date(vencimentoFim + 'T23:59:59') : null
+    // PARCIAL/ABERTO/'' → parcelas em aberto; QUITADO/CANCELADO → o status escolhido
+    const statusAlvo = filtroStatus === 'QUITADO' ? 'QUITADO'
+      : filtroStatus === 'CANCELADO' ? 'CANCELADO'
+      : 'ABERTO'
+
+    const rows: { parcela: Parcela; titulo: Titulo }[] = []
+    for (const t of list) {
+      if (q && !(t.descricao.toLowerCase().includes(q) || (t.pessoa?.nome ?? '').toLowerCase().includes(q))) continue
+      for (const p of t.parcelas) {
+        if (p.status !== statusAlvo) continue
+        const venc = new Date(String(p.vencimento).slice(0, 10) + 'T12:00:00')
+        if (inicio && venc < inicio) continue
+        if (fim && venc > fim) continue
+        if (filtroVencidos && !(p.status === 'ABERTO' && isVencido(p.vencimento))) continue
+        rows.push({ parcela: p, titulo: t })
+      }
+    }
+    rows.sort((a, b) =>
+      new Date(a.parcela.vencimento).getTime() - new Date(b.parcela.vencimento).getTime())
+    return rows
+  }, [lista, busca, filtroStatus, filtroVencidos, vencimentoInicio, vencimentoFim])
 
   const contasList = contas
   const contasFinanceirasList = (contasFinanceiras ?? []).filter(c => c.codigo)
@@ -1322,11 +1357,11 @@ export function TitulosPage() {
       {/* Lista */}
       {isLoading ? (
         <div className="flex items-center justify-center py-16 text-gray-400">Carregando...</div>
-      ) : titulos.length === 0 ? (
+      ) : parcelasFlat.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-gray-400 border-2 border-dashed rounded-xl">
           <Calendar size={40} className="mb-3 opacity-40" />
-          <p className="font-medium">Nenhum título encontrado</p>
-          <p className="text-sm mt-1">Crie um novo título a {tipo === 'PAGAR' ? 'pagar' : 'receber'} para começar</p>
+          <p className="font-medium">Nenhuma parcela encontrada</p>
+          <p className="text-sm mt-1">Ajuste o período/filtros ou crie um novo título a {tipo === 'PAGAR' ? 'pagar' : 'receber'}</p>
         </div>
       ) : (
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
@@ -1337,16 +1372,17 @@ export function TitulosPage() {
                 <th className="px-4 py-3">Descrição</th>
                 <th className="px-4 py-3">Parcela</th>
                 <th className="px-4 py-3">Vencimento</th>
-                <th className="px-4 py-3 text-right">Valor Total</th>
+                <th className="px-4 py-3 text-right">Valor</th>
                 <th className="px-4 py-3">Status</th>
                 <th className="px-4 py-3 text-right">Ações</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {titulos.map(t => (
-                <TituloRow
-                  key={t.id}
-                  titulo={t}
+              {parcelasFlat.map(({ parcela, titulo }) => (
+                <ParcelaRow
+                  key={parcela.id}
+                  parcela={parcela}
+                  titulo={titulo}
                   contas={contasList}
                   onCancelar={id => { setCancelarId(id); setCancelarErro('') }}
                 />

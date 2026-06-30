@@ -26,15 +26,18 @@ interface MovimentacaoApt {
 }
 
 interface Apontamento {
-  id: string; quantidade: number; observacao?: string
+  id: string; quantidade: number; observacao?: string; custoReal?: number
   estornado: boolean; estornadoEm?: string; observacaoEstorno?: string
   criadoEm: string; movimentacoes: MovimentacaoApt[]
 }
 
 interface ExplosaoItem {
   componenteId: string; insumo: string; necessario: number
-  unidade: string; disponivel: number; suficiente: boolean
+  unidade: string; custoUnitario: number; custoTotal: number
+  disponivel: number; suficiente: boolean
 }
+
+const fmtBRL = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
 
 const statusCor: Record<string, string> = {
   PLANEJADA: 'bg-blue-100 text-blue-700',
@@ -82,21 +85,23 @@ function ApontamentoForm({ ordem, onSuccess, onCancel }: {
   const { data: explosao = [] } = useQuery<ExplosaoItem[]>({
     queryKey: ['bom-explosao', ordem.produtoId, qtdForm],
     queryFn: () => api.get(`/producao/bom/${ordem.produtoId}/explosao`, { params: { quantidade: qtdForm } }).then(r => r.data.explosao),
-    enabled: ajustarConsumo && qtdForm > 0,
+    enabled: qtdForm > 0,
   })
+
+  // Custo do lote para a quantidade apontada: teórico (BOM) e real (consumo ajustado).
+  const custoTeoricoLote = explosao.reduce((s, e) => s + e.custoTotal, 0)
+  const custoRealLote = ajustarConsumo
+    ? explosao.reduce((s, e) => s + Number(consumoReal[e.componenteId] ?? e.necessario) * e.custoUnitario, 0)
+    : custoTeoricoLote
+  const variancia = custoRealLote - custoTeoricoLote
 
   const mutation = useMutation({
     mutationFn: (payload: ApontamentoData & { consumos?: { componenteId: string; quantidade: number }[] }) =>
       api.post(`/producao/ordens/${ordem.id}/apontar`, payload),
-    onSuccess: (res) => {
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['ordens-producao'] })
       queryClient.invalidateQueries({ queryKey: ['produtos-estoque'] })
       queryClient.invalidateQueries({ queryKey: ['movimentacoes'] })
-      const d = res.data as { variancia?: number; custoRealLote?: number; custoPadraoLote?: number }
-      if (d.variancia !== undefined && Math.abs(d.variancia) > 0.005) {
-        const f = (v?: number) => (v ?? 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
-        alert(`Apontamento registrado.\nCusto real do lote: ${f(d.custoRealLote)}\nCusto padrão: ${f(d.custoPadraoLote)}\nVariância: ${f(d.variancia)}`)
-      }
       onSuccess()
     },
   })
@@ -189,6 +194,35 @@ function ApontamentoForm({ ordem, onSuccess, onCancel }: {
               />
             </div>
           </div>
+
+          {/* Custo do lote: teórico × real (variância) */}
+          {explosao.length > 0 && (
+            <div className="border-t border-white/60 pt-2 space-y-1 text-xs">
+              <div className="flex justify-between text-gray-600">
+                <span>Custo estimado (teórico)</span>
+                <span className="tabular-nums">{fmtBRL(custoTeoricoLote)}</span>
+              </div>
+              {ajustarConsumo && (
+                <>
+                  <div className="flex justify-between text-gray-800 font-medium">
+                    <span>Custo real (consumo informado)</span>
+                    <span className="tabular-nums">{fmtBRL(custoRealLote)}</span>
+                  </div>
+                  <div className={clsx(
+                    'flex justify-between font-semibold',
+                    Math.abs(variancia) < 0.005 ? 'text-gray-500' : variancia > 0 ? 'text-red-600' : 'text-green-600',
+                  )}>
+                    <span>Variância</span>
+                    <span className="tabular-nums">{variancia > 0 ? '+' : ''}{fmtBRL(variancia)}</span>
+                  </div>
+                </>
+              )}
+              <div className="flex justify-between text-gray-400">
+                <span>Custo unitário do acabado</span>
+                <span className="tabular-nums">{qtdForm > 0 ? fmtBRL(custoRealLote / qtdForm) : '—'}</span>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -447,6 +481,7 @@ export function OrdensProducaoPage() {
                     <tr className="text-left text-xs text-gray-500 uppercase tracking-wide border-b border-gray-100">
                       <th className="px-4 py-2">Data/Hora</th>
                       <th className="px-4 py-2 text-right">Quantidade</th>
+                      <th className="px-4 py-2 text-right">Custo real</th>
                       <th className="px-4 py-2">Observação</th>
                       <th className="px-4 py-2">Movimentações</th>
                       <th className="px-4 py-2 text-center">Ação</th>
@@ -460,6 +495,16 @@ export function OrdensProducaoPage() {
                         </td>
                         <td className="px-4 py-3 text-right font-bold tabular-nums">
                           {Number(apt.quantidade).toFixed(3)}
+                        </td>
+                        <td className="px-4 py-3 text-right tabular-nums text-gray-700">
+                          {Number(apt.custoReal ?? 0) > 0 ? (
+                            <div>
+                              <div>{fmtBRL(Number(apt.custoReal))}</div>
+                              <div className="text-[11px] text-gray-400">
+                                {fmtBRL(Number(apt.custoReal) / Number(apt.quantidade))}/un
+                              </div>
+                            </div>
+                          ) : <span className="text-gray-300">—</span>}
                         </td>
                         <td className="px-4 py-3 text-gray-600 text-xs">
                           {apt.observacao ?? <span className="text-gray-300">—</span>}

@@ -169,6 +169,40 @@ async function main() {
   }
 
   console.log(`✅ Configurações padrão criadas: ${configuracoesDefault.length}`)
+
+  // Naturezas de operação (saída) — perfis fiscais p/ Simples Nacional. Idempotente por código.
+  const contaReceitaId = idPorCodigo['3.1.1'] ?? null
+  const textoSimples = 'Documento emitido por ME ou EPP optante pelo Simples Nacional. Não gera direito a crédito fiscal de ICMS, IPI e ISS (LC 123/2006).'
+  const naturezasDefault = [
+    {
+      codigo: '5101', descricao: 'Venda de produção própria', tipoOperacao: 'SAIDA', finalidadeNFe: 'NORMAL',
+      cfop: 'x101',
+      movimentaEstoque: 'SAIDA', geraFinanceiro: true, geraReceitaDRE: true, contaFinanceiraId: contaReceitaId,
+      csosn: '102', cstPis: '49', cstCofins: '49', textoComplementar: textoSimples,
+    },
+    {
+      codigo: '5102', descricao: 'Venda de mercadoria (revenda)', tipoOperacao: 'SAIDA', finalidadeNFe: 'NORMAL',
+      cfop: 'x102',
+      movimentaEstoque: 'SAIDA', geraFinanceiro: true, geraReceitaDRE: true, contaFinanceiraId: contaReceitaId,
+      csosn: '102', cstPis: '49', cstCofins: '49', textoComplementar: textoSimples,
+    },
+    {
+      codigo: '5910', descricao: 'Bonificação / Brinde', tipoOperacao: 'SAIDA', finalidadeNFe: 'NORMAL',
+      cfop: 'x910',
+      movimentaEstoque: 'SAIDA', geraFinanceiro: false, geraReceitaDRE: false, contaFinanceiraId: null,
+      csosn: '102', cstPis: '49', cstCofins: '49', textoComplementar: textoSimples,
+    },
+  ] as const
+
+  for (const nat of naturezasDefault) {
+    await prisma.naturezaOperacao.upsert({
+      where: { codigo: nat.codigo },
+      update: {},
+      create: nat as never,
+    })
+  }
+
+  console.log(`✅ Naturezas de operação criadas: ${naturezasDefault.length}`)
   console.log('✅ Seed concluído!')
 }
 

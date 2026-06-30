@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify'
-import { prisma } from '@erp/database'
+import { prisma, Prisma } from '@erp/database'
 import { z } from 'zod'
 import { requirePerfil } from '../../plugins/auth.plugin.js'
 import { permiteEstoqueNegativo } from '../estoque/config-estoque.js'
@@ -47,7 +47,7 @@ export async function producaoRoutes(app: FastifyInstance) {
       include: {
         produto: { select: { nome: true } },
         itens: {
-          include: { componente: { select: { nome: true, estoqueAtual: true, unidadeMedida: true } } },
+          include: { componente: { select: { nome: true, estoqueAtual: true, unidadeMedida: true, custoUnitario: true } } },
           orderBy: { ordem: 'asc' },
         },
       },
@@ -58,11 +58,14 @@ export async function producaoRoutes(app: FastifyInstance) {
     const fator = qtd / Number(bom.qtdeProduzida)
     const explosao = bom.itens.map(item => {
       const necessario = Number(item.quantidade) * fator * (1 + Number(item.percPerda) / 100)
+      const custoUnitario = Number(item.componente.custoUnitario)
       return {
         componenteId: item.componenteId,
         insumo: item.componente.nome,
         necessario,
         unidade: item.unidade,
+        custoUnitario,
+        custoTotal: +(necessario * custoUnitario).toFixed(4),
         disponivel: Number(item.componente.estoqueAtual),
         suficiente: Number(item.componente.estoqueAtual) >= necessario,
       }
@@ -200,7 +203,7 @@ export async function producaoRoutes(app: FastifyInstance) {
     const idsCusto = [ordem.produtoId, ...bom.itens.map(i => i.componenteId)]
     const custosProd = await prisma.produto.findMany({
       where: { id: { in: idsCusto } },
-      select: { id: true, nome: true, custoUnitario: true, estoqueAtual: true },
+      select: { id: true, nome: true, custoUnitario: true, custoMedio: true, estoqueAtual: true },
     })
     const custoDe = (pid: string) => +Number(custosProd.find(c => c.id === pid)?.custoUnitario ?? 0).toFixed(4)
 
@@ -231,11 +234,25 @@ export async function producaoRoutes(app: FastifyInstance) {
       }
     }
 
-    // Custo real do lote (#2-A): soma do custo dos componentes efetivamente consumidos.
-    // Gravado como snapshot na entrada do acabado; NÃO altera o custoUnitario (padrão do BOM).
+    // Custo real do lote: soma do custo dos componentes efetivamente consumidos.
     const custoRealLote = +plano.reduce((s, p) => s + p.consumo * p.custo, 0).toFixed(4)
     const custoRealUnit = quantidade > 0 ? +(custoRealLote / quantidade).toFixed(4) : custoDe(ordem.produtoId)
+    // custoPadraoUnit = custo do acabado ANTES deste apontamento (estimativa do BOM) → variância
     const custoPadraoUnit = custoDe(ordem.produtoId)
+
+    // O custo real apurado vira o custo do produto fabricado (média ponderada respeitando
+    // METODO_CUSTO, igual à entrada de estoque). O saldo/custo "antes" é o de custosProd,
+    // lido fora da transação (pré-apontamento).
+    const configMetodo = await prisma.configuracao.findUnique({ where: { chave: 'METODO_CUSTO' } })
+    const metodo = configMetodo?.valor ?? 'MEDIO'
+    const acabado = custosProd.find(c => c.id === ordem.produtoId)
+    const estoqueAntesAcab = Number(acabado?.estoqueAtual ?? 0)
+    const custoMedioAntesAcab = Number(acabado?.custoMedio ?? 0)
+    const novoEstoqueAcab = estoqueAntesAcab + quantidade
+    const novoCustoMedioAcab = +(novoEstoqueAcab > 0
+      ? (estoqueAntesAcab * custoMedioAntesAcab + quantidade * custoRealUnit) / novoEstoqueAcab
+      : custoRealUnit).toFixed(4)
+    const custoAtivoAcab = metodo === 'ULTIMO' ? custoRealUnit : novoCustoMedioAcab
 
     const apontamento = await prisma.$transaction(async (tx) => {
       // Cria o registro do apontamento (com o custo real do lote)
@@ -243,13 +260,27 @@ export async function producaoRoutes(app: FastifyInstance) {
         data: { ordemProducaoId: id, quantidade, custoReal: custoRealLote, observacao },
       })
 
-      // Entrada do produto acabado (custo = custo real do lote consumido)
+      // Entrada do produto acabado (custo = custo real do lote consumido).
+      // O custo real apurado define o custo do produto fabricado.
       await tx.movimentacaoEstoque.create({
         data: { produtoId: ordem.produtoId, apontamentoId: apt.id, tipo: 'ENTRADA', quantidade, custoUnitario: custoRealUnit, observacao: obs },
       })
       await tx.produto.update({
         where: { id: ordem.produtoId },
-        data: { estoqueAtual: { increment: quantidade } },
+        data: {
+          estoqueAtual: { increment: quantidade },
+          ultimoCusto: custoRealUnit,
+          custoMedio: novoCustoMedioAcab,
+          custoUnitario: custoAtivoAcab,
+        },
+      })
+      await tx.produtoCusto.create({
+        data: {
+          produtoId: ordem.produtoId,
+          custo: custoAtivoAcab,
+          motivo: 'PRODUCAO',
+          observacao: `Custo real da produção — OP ${ordem.numero}: ${quantidade} un. a R$ ${custoRealUnit.toFixed(4)}/un (método ${metodo === 'ULTIMO' ? 'último custo' : 'custo médio'})`,
+        },
       })
 
       // Saída de cada componente (consumo real ou teórico), com custo snapshot
@@ -341,6 +372,11 @@ export async function producaoRoutes(app: FastifyInstance) {
         })
       }
 
+      // Reverte o custo do produto fabricado: remove o registro PRODUCAO deste
+      // apontamento e volta o custo ao registro anterior restante.
+      const acabadoId = apontamento.movimentacoes.find(m => m.tipo === 'ENTRADA')?.produtoId
+      if (acabadoId) await reverterCustoProducao(tx, acabadoId, apontamento.criadoEm)
+
       // Marca o apontamento como estornado
       await tx.apontamentoProducao.update({
         where: { id: apontamentoId },
@@ -368,10 +404,32 @@ export async function producaoRoutes(app: FastifyInstance) {
   })
 }
 
+// Reverte o custo de um produto fabricado após estornar um apontamento: remove o
+// registro de custo PRODUCAO criado por aquele lote (localizado por motivo + janela de
+// ±2s em torno do apontamento, pois não há FK ProdutoCusto→apontamento) e volta o custo
+// ao registro anterior restante. Mesmo padrão da exclusão de entrada manual de estoque.
+async function reverterCustoProducao(tx: Prisma.TransactionClient, acabadoId: string, aptCriadoEm: Date) {
+  const ini = new Date(aptCriadoEm.getTime() - 2000)
+  const fim = new Date(aptCriadoEm.getTime() + 2000)
+  const rec = await tx.produtoCusto.findFirst({
+    where: { produtoId: acabadoId, motivo: 'PRODUCAO', criadoEm: { gte: ini, lte: fim } },
+    orderBy: { criadoEm: 'desc' },
+  })
+  if (!rec) return
+  await tx.produtoCusto.delete({ where: { id: rec.id } })
+  const anterior = await tx.produtoCusto.findFirst({ where: { produtoId: acabadoId }, orderBy: { criadoEm: 'desc' } })
+  const custo = +(anterior ? Number(anterior.custo) : 0).toFixed(4)
+  await tx.produto.update({
+    where: { id: acabadoId },
+    data: { custoUnitario: custo, custoMedio: custo, ultimoCusto: custo },
+  })
+}
+
 async function estornarTodosApontamentos(ordemId: string, motivoCancelamento: string) {
   const apontamentos = await prisma.apontamentoProducao.findMany({
     where: { ordemProducaoId: ordemId, estornado: false },
     include: { movimentacoes: true },
+    orderBy: { criadoEm: 'asc' }, // do mais antigo ao mais novo: o último revert fixa o custo correto
   })
 
   if (apontamentos.length === 0) return
@@ -398,6 +456,10 @@ async function estornarTodosApontamentos(ordemId: string, motivoCancelamento: st
           data: { estoqueAtual: { increment: delta } },
         })
       }
+      // Reverte o custo real que este apontamento gravou no produto fabricado
+      const acabadoId = apt.movimentacoes.find(m => m.tipo === 'ENTRADA' && !m.observacao?.startsWith('Estorno'))?.produtoId
+      if (acabadoId) await reverterCustoProducao(tx, acabadoId, apt.criadoEm)
+
       await tx.apontamentoProducao.update({
         where: { id: apt.id },
         data: { estornado: true, estornadoEm: new Date(), observacaoEstorno: motivoCancelamento },

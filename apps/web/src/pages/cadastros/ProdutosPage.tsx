@@ -72,8 +72,14 @@ const schema = z.object({
   origem: z.coerce.number().min(0).max(8),
   fornecedorId: z.string().optional().nullable(),
   codigoFornecedor: z.string().max(60).optional().nullable(),
-  fatorConversao: z.coerce.number().positive().optional().nullable(),
-  operacaoConversao: z.enum(['MULTIPLICAR', 'DIVIDIR']).optional().nullable(),
+  fatorConversao: z.preprocess(
+    (v) => (v === '' || v === undefined || v === null || Number(v) === 0 ? null : Number(v)),
+    z.number().positive().nullable().optional(),
+  ),
+  operacaoConversao: z.preprocess(
+    (v) => (v === '' ? null : v),
+    z.enum(['MULTIPLICAR', 'DIVIDIR']).nullable().optional(),
+  ),
 })
 
 type FormData = z.infer<typeof schema>

@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { prisma } from '@erp/database'
 import { CriarTituloSchema, AtualizarTituloSchema, BaixarParcelaSchema } from '@erp/shared'
 import { requirePerfil } from '../../plugins/auth.plugin.js'
+import { statusTituloPorParcelas, montarLinhasEncargo, somaEncargos, LABEL_CONTA } from './baixa.js'
 
 export async function titulosRoutes(app: FastifyInstance) {
   app.addHook('preHandler', requirePerfil('ADMIN', 'GERENTE', 'FINANCEIRO'))
@@ -200,6 +201,7 @@ export async function titulosRoutes(app: FastifyInstance) {
             tipo: true,
             descricao: true,
             documento: true,
+            contaFinanceiraId: true,
             recorrenciaId: true,
             recorrenciaOrdem: true,
             pessoa: { select: { nome: true } },
@@ -215,9 +217,29 @@ export async function titulosRoutes(app: FastifyInstance) {
     const contaBancaria = await prisma.contaBancaria.findUnique({ where: { id: data.contaBancariaId } })
     if (!contaBancaria) return reply.code(404).send({ error: 'Conta bancária não encontrada.' })
 
-    let statusFinalTitulo = 'ABERTO'
+    // Encargos (juros/multa/taxas) embutidos no valor pago → rateados para contas de DRE,
+    // mesmo padrão da conciliação (taxas = tarifa bancária).
+    const linhasEncargo = montarLinhasEncargo(parcela.titulo.tipo, {
+      tarifa: data.taxas, juros: data.juros, multa: data.multa,
+    })
+    const totalEncargos = somaEncargos(linhasEncargo)
+    if (totalEncargos >= data.valorPago) {
+      return reply.code(400).send({ error: 'Os encargos não podem ser maiores ou iguais ao valor pago.' })
+    }
+    const contasEncargo = new Map<string, string>()
+    if (linhasEncargo.length > 0) {
+      const chaves = [...new Set(linhasEncargo.map(l => l.chaveConta))]
+      const cfgs = await prisma.configuracao.findMany({ where: { chave: { in: chaves } } })
+      for (const c of cfgs) if (c.valor) contasEncargo.set(c.chave, c.valor)
+      const faltando = chaves.filter(k => !contasEncargo.has(k))
+      if (faltando.length > 0) {
+        return reply.code(400).send({
+          error: `Conta de DRE não configurada para: ${faltando.map(k => LABEL_CONTA[k] ?? k).join(', ')}. Defina em Configurações > Financeiro.`,
+        })
+      }
+    }
 
-    await prisma.$transaction(async (tx) => {
+    const statusFinalTitulo = await prisma.$transaction(async (tx) => {
       const encargos = (data.juros ?? 0) + (data.multa ?? 0) + (data.taxas ?? 0)
       const principalPago = data.valorPago - encargos
       const valorOriginal = Number(parcela.valor)
@@ -270,32 +292,63 @@ export async function titulosRoutes(app: FastifyInstance) {
       const partes = [tituloLabel, parcelaLabel, data.observacao || null].filter(Boolean)
       const descricao = partes.join(', ')
 
-      // Lança na conta bancária (transação financeira)
+      // Lança na conta bancária. O principal vai para a conta do plano de contas (DRE)
+      // informada na baixa, ou a do título por padrão; fica vinculado à parcela (FK);
+      // os encargos são rateados. A soma das linhas = valorPago (movimento do banco).
+      const tipoLanc = parcela.titulo.tipo === 'PAGAR' ? 'DEBITO' : 'CREDITO'
+      const contaDre = data.contaFinanceiraId ?? parcela.titulo.contaFinanceiraId ?? null
+      const principalBanco = Number((data.valorPago - totalEncargos).toFixed(2))
+
+      // Se o usuário informou a conta na baixa e o título não tinha, memoriza no título
+      if (data.contaFinanceiraId && !parcela.titulo.contaFinanceiraId) {
+        await tx.tituloFinanceiro.update({ where: { id }, data: { contaFinanceiraId: data.contaFinanceiraId } })
+      }
+
       await tx.transacaoFinanceira.create({
         data: {
           contaBancariaId: data.contaBancariaId,
           fitid: `TITULO-${parcelaId}`,
           data: new Date(data.dataBaixa),
-          valor: data.valorPago,
-          tipo: parcela.titulo.tipo === 'PAGAR' ? 'DEBITO' : 'CREDITO',
+          valor: principalBanco,
+          tipo: tipoLanc,
           descricao,
           nomeOriginal: descricao,
+          contaFinanceiraId: contaDre,
+          parcelaFinanceiraId: parcelaId,
           fonteClassificacao: 'TITULO',
           confiancaClassificacao: 1,
-          status: 'REVISADO',
+          // Sem conta resolvida → PENDENTE para entrar na fila de classificação
+          status: contaDre ? 'REVISADO' : 'PENDENTE',
         },
       })
+
+      // Linhas de encargo (tarifa/juros/multa) — cada uma na sua conta de DRE
+      for (const linha of linhasEncargo) {
+        await tx.transacaoFinanceira.create({
+          data: {
+            contaBancariaId: data.contaBancariaId,
+            fitid: `TITULO-${parcelaId}-ENC-${linha.chaveConta}`,
+            data: new Date(data.dataBaixa),
+            valor: linha.valor,
+            tipo: tipoLanc,
+            descricao: `${LABEL_CONTA[linha.chaveConta] ?? 'Encargo'} — ${descricao}`,
+            nomeOriginal: descricao,
+            contaFinanceiraId: contasEncargo.get(linha.chaveConta)!,
+            fonteClassificacao: 'TITULO_ENCARGO',
+            confiancaClassificacao: 1,
+            status: 'REVISADO',
+          },
+        })
+      }
 
       // Verifica e atualiza status do título
       const todasParcelas = await tx.parcelaFinanceira.findMany({
         where: { tituloId: id },
         select: { status: true },
       })
-      const abertas = todasParcelas.filter(p => p.status === 'ABERTO').length
-      const quitadas = todasParcelas.filter(p => p.status === 'QUITADO').length
-      const novoStatus = abertas === 0 && quitadas > 0 ? 'QUITADO' : quitadas > 0 ? 'PARCIAL' : 'ABERTO'
-      statusFinalTitulo = novoStatus
+      const novoStatus = statusTituloPorParcelas(todasParcelas.map(p => p.status))
       await tx.tituloFinanceiro.update({ where: { id }, data: { status: novoStatus } })
+      return novoStatus
     })
 
     // Auto-renovação: se o título recorrente foi quitado e é o último do lote
@@ -353,8 +406,9 @@ export async function titulosRoutes(app: FastifyInstance) {
     if (parcela.status !== 'QUITADO') return reply.code(409).send({ error: 'Apenas parcelas quitadas podem ser estornadas.' })
 
     await prisma.$transaction(async (tx) => {
-      // Remove a transação financeira gerada pela baixa
-      await tx.transacaoFinanceira.deleteMany({ where: { fitid: `TITULO-${parcelaId}` } })
+      // Remove a transação principal e as linhas de encargo geradas pela baixa
+      // (fitid `TITULO-{parcelaId}` e `TITULO-{parcelaId}-ENC-*`)
+      await tx.transacaoFinanceira.deleteMany({ where: { fitid: { startsWith: `TITULO-${parcelaId}` } } })
 
       // Remove parcela de saldo criada em baixa parcial (se existir)
       await tx.parcelaFinanceira.deleteMany({ where: { tituloId: id, parcelaOrigemId: parcelaId } })
@@ -378,10 +432,10 @@ export async function titulosRoutes(app: FastifyInstance) {
       const todasParcelas = await tx.parcelaFinanceira.findMany({
         where: { tituloId: id }, select: { status: true },
       })
-      const abertas = todasParcelas.filter(p => p.status === 'ABERTO').length
-      const quitadas = todasParcelas.filter(p => p.status === 'QUITADO').length
-      const novoStatus = abertas === 0 && quitadas === 0 ? 'CANCELADO' : abertas === 0 ? 'QUITADO' : quitadas > 0 ? 'PARCIAL' : 'ABERTO'
-      await tx.tituloFinanceiro.update({ where: { id }, data: { status: novoStatus } })
+      await tx.tituloFinanceiro.update({
+        where: { id },
+        data: { status: statusTituloPorParcelas(todasParcelas.map(p => p.status)) },
+      })
     })
 
     return { ok: true }
@@ -393,16 +447,18 @@ export async function titulosRoutes(app: FastifyInstance) {
     if (!parcela || parcela.tituloId !== id) return reply.code(404).send({ error: 'Parcela não encontrada.' })
     if (parcela.status === 'QUITADO') return reply.code(409).send({ error: 'Parcela quitada não pode ser cancelada.' })
 
-    await prisma.parcelaFinanceira.update({ where: { id: parcelaId }, data: { status: 'CANCELADO' } })
+    await prisma.$transaction(async (tx) => {
+      await tx.parcelaFinanceira.update({ where: { id: parcelaId }, data: { status: 'CANCELADO' } })
 
-    // Recalcula status do título
-    const todasParcelas = await prisma.parcelaFinanceira.findMany({
-      where: { tituloId: id }, select: { status: true },
+      // Recalcula status do título
+      const todasParcelas = await tx.parcelaFinanceira.findMany({
+        where: { tituloId: id }, select: { status: true },
+      })
+      await tx.tituloFinanceiro.update({
+        where: { id },
+        data: { status: statusTituloPorParcelas(todasParcelas.map(p => p.status)) },
+      })
     })
-    const abertas = todasParcelas.filter(p => p.status === 'ABERTO').length
-    const quitadas = todasParcelas.filter(p => p.status === 'QUITADO').length
-    const novoStatus = abertas === 0 && quitadas === 0 ? 'CANCELADO' : abertas === 0 ? 'QUITADO' : quitadas > 0 ? 'PARCIAL' : 'ABERTO'
-    await prisma.tituloFinanceiro.update({ where: { id }, data: { status: novoStatus } })
 
     return { ok: true }
   })

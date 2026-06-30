@@ -38,6 +38,47 @@ export const CriarPedidoVendaSchema = z.object({
   canal: z.enum(['BALCAO', 'ATACADO', 'DELIVERY', 'ONLINE']),
   formaPagamento: z.enum(['DINHEIRO', 'CREDITO', 'DEBITO', 'PIX', 'PRAZO']),
   desconto: z.number().min(0).default(0),
+  // Frete e outras despesas (compõem o total da nota)
+  vFrete: z.number().min(0).default(0),
+  vSeguro: z.number().min(0).default(0),
+  vOutros: z.number().min(0).default(0),
+  // Dados fiscais da operação (NF-e/NFC-e)
+  modeloNFe: z.enum(['NFE', 'NFCE']).default('NFE'),
+  naturezaOperacaoId: z.string().uuid().optional(), // natureza de operação (cadastro)
+  naturezaOperacao: z.string().min(1).max(60).default('Venda de mercadoria'), // snapshot (derivado da natureza)
+  modalidadeFrete: z.number().int().min(0).max(9).default(9),
+  indPres: z.number().int().min(0).max(9).default(1), // presença do comprador (NF-e)
+  // Cabeçalho comercial
+  dataEmissao: z.coerce.date().optional(),
+  previsaoEntrega: z.coerce.date().optional(),
+  validadeProposta: z.coerce.date().optional(),
+  pedidoCliente: z.string().max(60).optional(),
+  // Local de entrega (grupo <entrega> da NF-e)
+  entregaDiferente: z.boolean().default(false),
+  entregaCep: z.string().max(8).optional(),
+  entregaLogradouro: z.string().max(120).optional(),
+  entregaNumero: z.string().max(20).optional(),
+  entregaComplemento: z.string().max(120).optional(),
+  entregaBairro: z.string().max(80).optional(),
+  entregaMunicipio: z.string().max(80).optional(),
+  entregaUf: z.string().length(2).optional(),
+  entregaCodigoIBGE: z.string().max(7).optional(),
+  // Transporte (grupo <transp> da NF-e)
+  transportadora: z.string().max(120).optional(),
+  transportadoraDoc: z.string().max(20).optional(),
+  veiculoPlaca: z.string().max(8).optional(),
+  veiculoUf: z.string().length(2).optional(),
+  volumesQtde: z.number().int().min(0).optional(),
+  volumesEspecie: z.string().max(60).optional(),
+  pesoBruto: z.number().min(0).optional(),
+  pesoLiquido: z.number().min(0).optional(),
+  // Cobrança / parcelas (duplicatas da NF-e)
+  parcelas: z.array(z.object({
+    numero: z.string().max(10),
+    vencimento: z.string(), // ISO date (yyyy-mm-dd)
+    valor: z.number().min(0),
+    meioPagamento: z.string().max(40).default('Dinheiro'),
+  })).optional(),
   vendedorId: z.string().uuid().optional(),
   observacao: z.string().max(1000).optional(),
   itens: z.array(z.object({

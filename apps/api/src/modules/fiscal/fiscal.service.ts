@@ -9,13 +9,14 @@ import {
   type NFeInput,
   type ItemNFeInput,
 } from './providers/focusnfe.provider.js'
+import { permiteEstoqueNegativo } from '../estoque/config-estoque.js'
+import { resolverCfop, destinoPorUF } from './cfop.js'
 
-// Retorna empresa + valida campos mínimos para emissão
+// Retorna empresa + valida campos mínimos para criação de nota
 export async function getEmpresaOuErro() {
   const empresa = await prisma.empresa.findFirst()
   if (!empresa) throw new Error('Empresa não configurada. Acesse Fiscal > Configuração.')
   if (!empresa.cnpj) throw new Error('CNPJ da empresa não informado.')
-  if (!empresa.providerApiKey) throw new Error('API Key do provedor NF-e não configurada.')
   return empresa
 }
 
@@ -219,6 +220,7 @@ export async function criarNFeDePedido(
     where: { id: pedidoVendaId },
     include: {
       pessoa: true,
+      natureza: { select: { cfop: true, tipoOperacao: true } },
       itens: { include: { produto: true } },
     },
   })
@@ -226,11 +228,23 @@ export async function criarNFeDePedido(
 
   const empresa = await getEmpresaOuErro()
 
-  // Valida campos fiscais de todos os produtos
-  const semFiscal = pedido.itens.filter(i => !i.produto.ncm || !i.produto.cfop)
-  if (semFiscal.length > 0) {
-    const nomes = semFiscal.map(i => i.produto.nome).join(', ')
-    throw new Error(`Produtos sem dados fiscais (NCM/CFOP): ${nomes}`)
+  // CFOP vem da natureza de operação do pedido; fallback para o campo do produto
+  const cfopBase = pedido.natureza?.cfop ?? null
+  const tipoOp = pedido.natureza?.tipoOperacao === 'ENTRADA' ? 'ENTRADA' : 'SAIDA'
+  const destino = destinoPorUF(empresa.uf, pedido.pessoa?.uf)
+
+  // Valida NCM (obrigatório no produto). CFOP pode vir da natureza — valida só se também não tiver no produto
+  const semNcm = pedido.itens.filter(i => !i.produto.ncm)
+  if (semNcm.length > 0) {
+    const nomes = semNcm.map(i => i.produto.nome).join(', ')
+    throw new Error(`Produtos sem NCM: ${nomes}`)
+  }
+  if (!cfopBase) {
+    const semCfop = pedido.itens.filter(i => !i.produto.cfop)
+    if (semCfop.length > 0) {
+      const nomes = semCfop.map(i => i.produto.nome).join(', ')
+      throw new Error(`Natureza de operação sem CFOP e produtos sem CFOP: ${nomes}`)
+    }
   }
 
   // Calcula totais
@@ -251,12 +265,16 @@ export async function criarNFeDePedido(
   })
   const numero = empresaAtualizada.proximoNumeroNFe - 1
 
-  const itensFiscais = pedido.itens.map((item, idx) => ({
+  const itensFiscais = pedido.itens.map((item, idx) => {
+    const cfopResolvido = resolverCfop(cfopBase ?? item.produto.cfop, tipoOp, destino)
+      ?? item.produto.cfop
+      ?? ''
+    return {
     nItem: idx + 1,
     cProd: item.produto.codigo,
     xProd: item.produto.nome,
     ncm: item.produto.ncm!,
-    cfop: item.produto.cfop!,
+    cfop: cfopResolvido,
     uCom: item.produto.unidadeComercial ?? 'UN',
     qCom: Number(item.quantidade),
     vUnCom: Number(item.precoUnitario),
@@ -277,7 +295,8 @@ export async function criarNFeDePedido(
     vPISval: +(Number(item.subtotal) * Number(item.produto.pPIS ?? 0) / 100).toFixed(2),
     vBCCOFINS: Number(item.subtotal),
     vCOFINSval: +(Number(item.subtotal) * Number(item.produto.pCOFINS ?? 0) / 100).toFixed(2),
-  }))
+    }
+  })
 
   const nota = await prisma.$transaction(async (tx) => {
     const nf = await tx.notaFiscal.create({
@@ -337,6 +356,201 @@ export async function criarNFeDePedido(
     return nf
   })
 
-  // Emite imediatamente (pode ser movido para uma fila em produção com BullMQ)
-  return emitirNotaFiscal(nota.id)
+  return nota
+}
+
+// Transmite nota PENDENTE à SEFAZ e lança estoque/financeiro do pedido vinculado se ainda não feito
+export async function transmitirNotaFiscal(notaFiscalId: string) {
+  const notaEmitida = await emitirNotaFiscal(notaFiscalId)
+  if (notaEmitida.status !== 'AUTORIZADA' || !notaEmitida.pedidoVendaId) return notaEmitida
+
+  const pedido = await prisma.pedidoVenda.findUnique({
+    where: { id: notaEmitida.pedidoVendaId },
+    include: {
+      itens: { include: { produto: { select: { id: true, nome: true, estoqueAtual: true, custoMedio: true } } } },
+      natureza: { select: { movimentaEstoque: true, geraFinanceiro: true, contaFinanceiraId: true } },
+    },
+  })
+  if (!pedido || pedido.status === 'CANCELADO') return notaEmitida
+
+  // Lançar estoque se necessário
+  if (!pedido.estoqueElancado) {
+    const movimentaEstoque = pedido.natureza?.movimentaEstoque ?? 'SAIDA'
+    if (movimentaEstoque !== 'NENHUM') {
+      const tipoMov = movimentaEstoque === 'ENTRADA' ? 'ENTRADA' : 'SAIDA' as const
+      const podeNegativo = await permiteEstoqueNegativo()
+
+      const podeLancar = podeNegativo || tipoMov === 'ENTRADA' || pedido.itens.every(
+        item => Number(item.produto.estoqueAtual) - Number(item.quantidade) >= -0.001,
+      )
+
+      if (podeLancar) {
+        await prisma.$transaction(async (tx) => {
+          for (const item of pedido.itens) {
+            const qtde = +Number(item.quantidade).toFixed(3)
+            const custo = +Number(item.produto.custoMedio).toFixed(4)
+            await tx.movimentacaoEstoque.create({
+              data: {
+                produtoId: item.produtoId,
+                pedidoVendaId: pedido.id,
+                tipo: tipoMov,
+                quantidade: qtde,
+                custoUnitario: custo,
+                observacao: `Venda Pedido ${pedido.numero} — NF-e ${notaEmitida.numero}`,
+              },
+            })
+            await tx.produto.update({
+              where: { id: item.produtoId },
+              data: { estoqueAtual: tipoMov === 'SAIDA' ? { decrement: qtde } : { increment: qtde } },
+            })
+          }
+          await tx.pedidoVenda.update({ where: { id: pedido.id }, data: { estoqueElancado: true } })
+        })
+      }
+    }
+  }
+
+  // Lançar financeiro se necessário
+  if (!pedido.financeiroLancado && (pedido.natureza === null || pedido.natureza.geraFinanceiro)) {
+    type ParcelaP = { numero: string; vencimento: string; valor: number; meioPagamento?: string }
+    const totalNf = Number(pedido.total)
+    const vencPadrao = pedido.dataEmissao
+      ? new Date(pedido.dataEmissao).toISOString().slice(0, 10)
+      : new Date().toISOString().slice(0, 10)
+
+    let parcelas: ParcelaP[] = pedido.parcelasJson ? JSON.parse(pedido.parcelasJson as string) : []
+    parcelas = parcelas.filter(p => p.vencimento && Number(p.valor) > 0)
+    if (parcelas.length === 0) {
+      parcelas = [{ numero: '001', vencimento: vencPadrao, valor: totalNf }]
+    }
+
+    const totalParcelas = parcelas.reduce((s, p) => s + Number(p.valor), 0)
+    const contaFinanceiraId = pedido.natureza?.contaFinanceiraId ?? null
+
+    await prisma.tituloFinanceiro.create({
+      data: {
+        tipo: 'RECEBER',
+        descricao: `Venda Pedido ${pedido.numero}`,
+        documento: String(pedido.numero),
+        total: totalParcelas,
+        pessoaId: pedido.pessoaId || null,
+        pedidoVendaId: pedido.id,
+        contaFinanceiraId,
+        status: 'ABERTO',
+        parcelas: {
+          create: parcelas.map((p, idx) => ({
+            numero: idx + 1,
+            valor: p.valor,
+            vencimento: new Date(p.vencimento),
+            status: 'ABERTO',
+            observacao: p.numero ? `Dup. ${p.numero}` : null,
+          })),
+        },
+      },
+    })
+    await prisma.pedidoVenda.update({ where: { id: pedido.id }, data: { financeiroLancado: true } })
+  }
+
+  return notaEmitida
+}
+
+// Atualiza campos editáveis de uma nota PENDENTE (cabeçalho + itens)
+export async function atualizarNFe(notaFiscalId: string, data: {
+  naturezaOperacao?: string
+  infCpl?: string
+  finNFe?: number
+  dataEmissao?: string
+  destNome?: string
+  destCpfCnpj?: string
+  destIE?: string
+  destIndicadorIE?: number
+  destCep?: string
+  destLogradouro?: string
+  destNumero?: string
+  destBairro?: string
+  destMunicipio?: string
+  destUf?: string
+  destCodigoIBGE?: string
+  formaPagamento?: string
+  vFrete?: number
+  vSeguro?: number
+  vDesconto?: number
+  itens?: Array<{
+    id: string
+    xProd?: string
+    cProd?: string
+    qCom?: number
+    vUnCom?: number
+    vProd?: number
+    uCom?: string
+    ncm?: string
+    cfop?: string
+    pICMS?: number
+    pPIS?: number
+    pCOFINS?: number
+  }>
+}) {
+  const nota = await prisma.notaFiscal.findUnique({
+    where: { id: notaFiscalId },
+    select: { status: true, vFrete: true, vSeguro: true, vDesconto: true },
+  })
+  if (!nota) throw new Error('Nota fiscal não encontrada.')
+  if (nota.status !== 'PENDENTE') throw new Error('Somente notas PENDENTE podem ser editadas.')
+
+  return prisma.$transaction(async (tx) => {
+    if (data.itens?.length) {
+      for (const item of data.itens) {
+        const { id, ...campos } = item
+        await tx.itemNotaFiscal.update({
+          where: { id },
+          data: {
+            ...(campos.xProd !== undefined && { xProd: campos.xProd }),
+            ...(campos.cProd !== undefined && { cProd: campos.cProd }),
+            ...(campos.qCom !== undefined && { qCom: campos.qCom }),
+            ...(campos.vUnCom !== undefined && { vUnCom: campos.vUnCom }),
+            ...(campos.vProd !== undefined && { vProd: campos.vProd }),
+            ...(campos.uCom !== undefined && { uCom: campos.uCom }),
+            ...(campos.ncm !== undefined && { ncm: campos.ncm }),
+            ...(campos.cfop !== undefined && { cfop: campos.cfop }),
+            ...(campos.pICMS !== undefined && { pICMS: campos.pICMS }),
+            ...(campos.pPIS !== undefined && { pPIS: campos.pPIS }),
+            ...(campos.pCOFINS !== undefined && { pCOFINS: campos.pCOFINS }),
+          },
+        })
+      }
+    }
+
+    const vFrete = data.vFrete ?? Number(nota.vFrete ?? 0)
+    const vSeguro = data.vSeguro ?? Number(nota.vSeguro ?? 0)
+    const vDesconto = data.vDesconto ?? Number(nota.vDesconto ?? 0)
+    const vNF = data.itens?.length
+      ? Math.max(data.itens.reduce((s, i) => s + Number(i.vProd ?? 0), 0) + vFrete + vSeguro - vDesconto, 0)
+      : undefined
+
+    return tx.notaFiscal.update({
+      where: { id: notaFiscalId },
+      data: {
+        ...(data.naturezaOperacao !== undefined && { naturezaOperacao: data.naturezaOperacao }),
+        ...(data.infCpl !== undefined && { infCpl: data.infCpl }),
+        ...(data.finNFe !== undefined && { finNFe: data.finNFe }),
+        ...(data.dataEmissao !== undefined && { dataEmissao: new Date(data.dataEmissao) }),
+        ...(data.destNome !== undefined && { destNome: data.destNome }),
+        ...(data.destCpfCnpj !== undefined && { destCpfCnpj: data.destCpfCnpj }),
+        ...(data.destIE !== undefined && { destIE: data.destIE }),
+        ...(data.destIndicadorIE !== undefined && { destIndicadorIE: data.destIndicadorIE }),
+        ...(data.destCep !== undefined && { destCep: data.destCep }),
+        ...(data.destLogradouro !== undefined && { destLogradouro: data.destLogradouro }),
+        ...(data.destNumero !== undefined && { destNumero: data.destNumero }),
+        ...(data.destBairro !== undefined && { destBairro: data.destBairro }),
+        ...(data.destMunicipio !== undefined && { destMunicipio: data.destMunicipio }),
+        ...(data.destUf !== undefined && { destUf: data.destUf }),
+        ...(data.destCodigoIBGE !== undefined && { destCodigoIBGE: data.destCodigoIBGE }),
+        ...(data.formaPagamento !== undefined && { formaPagamento: data.formaPagamento }),
+        ...(data.vFrete !== undefined && { vFrete: data.vFrete }),
+        ...(data.vSeguro !== undefined && { vSeguro: data.vSeguro }),
+        ...(data.vDesconto !== undefined && { vDesconto: data.vDesconto }),
+        ...(vNF !== undefined && { vNF }),
+      },
+    })
+  })
 }

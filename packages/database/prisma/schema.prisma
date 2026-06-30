@@ -44,7 +44,6 @@ model Usuario {
   atualizadoEm DateTime     @updatedAt
 
   ordensProducao  OrdemProducao[]
-  pedidosVenda    PedidoVenda[]
   sessoesRefresh  SessaoRefresh[]
 
   @@map("usuarios")
@@ -79,8 +78,9 @@ enum MotivoCusto {
   NF_ENTRADA            // Lançamento de estoque via NF de entrada
   FORMACAO_CUSTO        // Formação de custo (rateio de frete/despesas)
   ESTORNO_NF            // Estorno de lançamento de NF
-  BOM                   // Recálculo automático por composição (BOM)
+  BOM                   // Custo teórico inicial ao definir/editar a composição (BOM)
   MOVIMENTACAO_ESTOQUE  // Entrada manual de estoque (movimentação)
+  PRODUCAO              // Custo real apurado no apontamento de produção
 }
 
 enum Aprovisionamento {
@@ -198,6 +198,7 @@ model MovimentacaoEstoque {
   produtoId       String
   apontamentoId   String?
   nfEntradaId     String?
+  pedidoVendaId   String?
   tipo            TipoMovimentacao
   quantidade      Decimal          @db.Decimal(12, 3)
   custoUnitario   Decimal?         @db.Decimal(12, 4)
@@ -209,9 +210,11 @@ model MovimentacaoEstoque {
   produto      Produto              @relation(fields: [produtoId], references: [id])
   apontamento  ApontamentoProducao? @relation(fields: [apontamentoId], references: [id])
   nfEntrada    NfEntrada?           @relation(fields: [nfEntradaId], references: [id])
+  pedidoVenda  PedidoVenda?         @relation("PedidoVendaMovimentacoes", fields: [pedidoVendaId], references: [id], onDelete: SetNull)
 
   @@index([produtoId])
   @@index([tipo, criadoEm])
+  @@index([pedidoVendaId])
   @@map("movimentacoes_estoque")
 }
 
@@ -395,18 +398,60 @@ model PedidoVenda {
   status         StatusPedido   @default(ABERTO)
   subtotal       Decimal        @db.Decimal(12, 2)
   desconto       Decimal        @default(0) @db.Decimal(12, 2)
+  // Frete e outras despesas (compõem o total da nota — vNF)
+  vFrete         Decimal        @default(0) @db.Decimal(12, 2)
+  vSeguro        Decimal        @default(0) @db.Decimal(12, 2)
+  vOutros        Decimal        @default(0) @db.Decimal(12, 2)
   total          Decimal        @db.Decimal(12, 2)
   formaPagamento FormaPagamento @default(DINHEIRO)
+  // Dados fiscais da operação (para emissão de NF-e/NFC-e). O modelo do documento
+  // (NF-e × NFC-e) é decidido na EMISSÃO, não no pedido.
+  modeloNFe          ModeloNFe @default(NFE)
+  naturezaOperacao   String    @default("Venda de mercadoria") // snapshot do texto (natOp da NF-e)
+  naturezaOperacaoId String?   // FK para o cadastro de Natureza de Operação
+  modalidadeFrete    Int       @default(9) // modFrete: 0 emit., 1 dest., 2 terc., 9 sem frete
+  indPres            Int       @default(1) // presença: 1 presencial, 2 internet, 3 teleat., 4 entrega, 9 outros
+  // Transporte (vão para o grupo <transp> da NF-e na emissão)
+  transportadora     String?   // nome/razão social (snapshot)
+  transportadoraDoc  String?   // CPF/CNPJ do transportador
+  veiculoPlaca       String?
+  veiculoUf          String?   @db.Char(2)
+  volumesQtde        Int?      // qVol
+  volumesEspecie     String?   // esp
+  pesoBruto          Decimal?  @db.Decimal(12, 3)
+  pesoLiquido        Decimal?  @db.Decimal(12, 3)
+  // Cobrança / parcelas (duplicatas da NF-e). JSON: [{ numero, vencimento, valor, meioPagamento }]
+  parcelasJson       String?
+  // Cabeçalho comercial
+  dataEmissao        DateTime  @default(now()) // data do pedido (definível pelo usuário)
+  previsaoEntrega    DateTime? // data prevista de entrega/expedição
+  validadeProposta   DateTime? // validade do pedido enquanto orçamento
+  pedidoCliente      String?   // nº do pedido / OC do cliente (referência externa)
+  // Local de entrega (grupo <entrega> da NF-e) — quando diferente do endereço do cadastro
+  entregaDiferente   Boolean   @default(false)
+  entregaCep         String?   @db.VarChar(8)
+  entregaLogradouro  String?
+  entregaNumero      String?
+  entregaComplemento String?
+  entregaBairro      String?
+  entregaMunicipio   String?
+  entregaUf          String?   @db.Char(2)
+  entregaCodigoIBGE  String?   @db.VarChar(7)
   vendedorId     String?
   observacao     String?
+  // Controle de lançamentos (mesmo padrão da NF de entrada)
+  estoqueElancado    Boolean @default(false)
+  financeiroLancado  Boolean @default(false)
   criadoEm      DateTime       @default(now())
   atualizadoEm  DateTime       @updatedAt
 
-  pessoa       Pessoa?           @relation(fields: [pessoaId], references: [id])
-  vendedor     Usuario?          @relation(fields: [vendedorId], references: [id])
-  itens        ItemPedidoVenda[]
-  notasFiscais NotaFiscal[]
-  titulos      TituloFinanceiro[]
+  pessoa               Pessoa?                @relation(fields: [pessoaId], references: [id])
+  vendedor             Vendedor?              @relation(fields: [vendedorId], references: [id])
+  natureza             NaturezaOperacao?      @relation(fields: [naturezaOperacaoId], references: [id])
+  itens                ItemPedidoVenda[]
+  notasFiscais         NotaFiscal[]
+  titulos              TituloFinanceiro[]
+  movimentacoesEstoque MovimentacaoEstoque[]  @relation("PedidoVendaMovimentacoes")
 
   @@index([status, criadoEm])
   @@index([canal])
@@ -427,6 +472,24 @@ model ItemPedidoVenda {
   produto     Produto     @relation(fields: [produtoId], references: [id])
 
   @@map("itens_pedido_venda")
+}
+
+// Cadastro próprio de vendedores (independente do cadastro de usuários/login)
+model Vendedor {
+  id             String    @id @default(uuid())
+  codigo         String    @unique
+  nome           String
+  documento      String?   // CPF
+  email          String?
+  telefone       String?
+  comissaoPadrao Decimal?  @db.Decimal(5, 2) // % de comissão padrão
+  ativo          Boolean   @default(true)
+  criadoEm      DateTime  @default(now())
+  atualizadoEm  DateTime  @updatedAt
+
+  pedidosVenda PedidoVenda[]
+
+  @@map("vendedores")
 }
 
 // ─────────────────────────────────────────
@@ -508,6 +571,65 @@ enum ProviderNFe {
   SEFAZ_DIRETO
 }
 
+enum TipoOperacaoFiscal {
+  SAIDA
+  ENTRADA
+}
+
+enum FinalidadeNFe {
+  NORMAL
+  COMPLEMENTAR
+  AJUSTE
+  DEVOLUCAO
+}
+
+enum EfeitoEstoqueOperacao {
+  NENHUM
+  SAIDA
+  ENTRADA
+}
+
+// Natureza de Operação (perfil fiscal tipo "TES"): governa CFOP, impostos,
+// finalidade e os efeitos da operação (estoque, financeiro, DRE).
+model NaturezaOperacao {
+  id            String             @id @default(uuid())
+  codigo        String             @unique @db.VarChar(20)
+  descricao     String             // vira o natOp/xNat da NF-e
+  ativo         Boolean            @default(true)
+  padraoVenda   Boolean            @default(false) // natureza padrão ao abrir um novo pedido
+  tipoOperacao  TipoOperacaoFiscal @default(SAIDA)
+  finalidadeNFe FinalidadeNFe      @default(NORMAL)
+  modeloPadrao  ModeloNFe?         // pré-seleciona o documento no pedido (opcional)
+  // CFOP base: o 1º dígito é resolvido na emissão pelo destino (mesma UF / outra UF /
+  // exterior) e pelo tipo (saída 5/6/7, entrada 1/2/3). Ex.: "x102" → 5102/6102/7102.
+  cfop String? @db.VarChar(5)
+  // Efeitos da operação
+  movimentaEstoque  EfeitoEstoqueOperacao @default(SAIDA)
+  geraFinanceiro    Boolean               @default(true)
+  geraReceitaDRE    Boolean               @default(true)
+  contaFinanceiraId String?               // conta de receita/resultado (DRE)
+  // Tributação (perfil da operação — colunas planas)
+  csosn          String?  @db.VarChar(4)
+  cstIcms        String?  @db.VarChar(3)
+  aliquotaIcms   Decimal? @db.Decimal(5, 2)
+  cstPis         String?  @db.VarChar(2)
+  aliquotaPis    Decimal? @db.Decimal(7, 4)
+  cstCofins      String?  @db.VarChar(2)
+  aliquotaCofins Decimal? @db.Decimal(7, 4)
+  cstIpi         String?  @db.VarChar(2)
+  aliquotaIpi    Decimal? @db.Decimal(7, 4)
+  // Texto fiscal padrão (infCpl — ex.: cláusula do Simples Nacional)
+  textoComplementar String? @db.Text
+  criadoEm     DateTime @default(now())
+  atualizadoEm DateTime @updatedAt
+
+  contaFinanceira ContaFinanceira? @relation("NaturezaContaReceita", fields: [contaFinanceiraId], references: [id])
+  pedidosVenda    PedidoVenda[]
+
+  @@index([tipoOperacao, ativo])
+  @@map("naturezas_operacao")
+}
+
 model Empresa {
   id               String      @id @default(uuid())
   razaoSocial      String
@@ -569,6 +691,7 @@ model NotaFiscal {
   protocolo        String?
   status           StatusNFe   @default(PENDENTE)
   naturezaOperacao String
+  finNFe           Int         @default(1) // finalidade: 1 normal, 2 compl., 3 ajuste, 4 devolução
   dataEmissao      DateTime    @default(now())
   dataSaida        DateTime?
   destNome         String
@@ -698,6 +821,7 @@ model ContaFinanceira {
   titulos      TituloFinanceiro[]
   recorrencias RecorrenciaFinanceira[]
   nfsEntrada   NfEntrada[]           @relation("NfEntradaContaFinanceira")
+  naturezasOperacao NaturezaOperacao[] @relation("NaturezaContaReceita")
 
   @@map("contas_financeiras")
 }

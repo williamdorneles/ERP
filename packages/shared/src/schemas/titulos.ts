@@ -30,6 +30,8 @@ export const BaixarParcelaSchema = z.object({
   dataBaixa: z.string().min(1, 'Data de baixa obrigatória'),
   valorPago: z.number().positive('Valor pago deve ser positivo'),
   contaBancariaId: z.string().uuid('Conta bancária obrigatória'),
+  // Plano de contas (DRE) da baixa — vem do título por padrão, ou o usuário informa
+  contaFinanceiraId: z.string().uuid().optional(),
   juros: z.number().min(0).optional(),
   multa: z.number().min(0).optional(),
   taxas: z.number().min(0).optional(),

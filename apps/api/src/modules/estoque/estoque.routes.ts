@@ -3,7 +3,6 @@ import { prisma } from '@erp/database'
 import { z } from 'zod'
 import { CriarMovimentacaoSchema } from '@erp/shared'
 import { requirePerfil } from '../../plugins/auth.plugin.js'
-import { propagarCustoComponente } from '../produtos/custo-bom.service.js'
 import { quantidadeArmazenada, efeitoEstoque } from './movimento.js'
 import { permiteEstoqueNegativo } from './config-estoque.js'
 
@@ -103,9 +102,6 @@ export async function estoqueRoutes(app: FastifyInstance) {
             observacao: `Entrada manual de estoque — ${data.quantidade} un. a R$ ${custoEntrada.toFixed(4)} (método ${metodo === 'ULTIMO' ? 'último custo' : 'custo médio'})${data.observacao ? ` — ${data.observacao}` : ''}`,
           },
         })
-
-        // Propaga o novo custo para produtos com BOM que usam este como componente
-        await propagarCustoComponente(tx, data.produtoId)
         return mov
       }
 
@@ -176,7 +172,6 @@ export async function estoqueRoutes(app: FastifyInstance) {
           where: { id: mov.produtoId },
           data: { custoUnitario: custo, custoMedio: custo, ultimoCusto: custo },
         })
-        await propagarCustoComponente(tx, mov.produtoId)
       }
 
       await tx.movimentacaoEstoque.delete({ where: { id } })

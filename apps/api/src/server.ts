@@ -25,6 +25,9 @@ import { conciliacaoRoutes } from './modules/financeiro/conciliacao.routes.js'
 import { nfEntradaRoutes } from './modules/nf-entrada/nf-entrada.routes.js'
 import { configuracoesRoutes } from './modules/configuracoes/configuracoes.routes.js'
 import { categoriasRoutes } from './modules/categorias/categorias.routes.js'
+import { naturezasOperacaoRoutes } from './modules/naturezas-operacao/naturezas-operacao.routes.js'
+import { lookupRoutes } from './modules/lookup/lookup.routes.js'
+import { vendedoresRoutes } from './modules/vendedores/vendedores.routes.js'
 
 const EnvSchema = z.object({
   DATABASE_URL: z.string().min(1, 'DATABASE_URL é obrigatória'),
@@ -91,6 +94,9 @@ await app.register(conciliacaoRoutes, { prefix: '/api/conciliacao' })
 await app.register(nfEntradaRoutes, { prefix: '/api/nf-entrada' })
 await app.register(configuracoesRoutes, { prefix: '/api/configuracoes' })
 await app.register(categoriasRoutes, { prefix: '/api/categorias' })
+await app.register(naturezasOperacaoRoutes, { prefix: '/api/naturezas-operacao' })
+await app.register(lookupRoutes, { prefix: '/api/lookup' })
+await app.register(vendedoresRoutes, { prefix: '/api/vendedores' })
 
 app.get('/health', () => ({ status: 'ok', timestamp: new Date().toISOString() }))
 

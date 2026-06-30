@@ -6,6 +6,8 @@ import { DashboardPage } from './pages/DashboardPage'
 import { ProdutosPage } from './pages/cadastros/ProdutosPage'
 import { PessoasPage } from './pages/cadastros/PessoasPage'
 import { CategoriasPage } from './pages/cadastros/CategoriasPage'
+import { NaturezasOperacaoPage } from './pages/cadastros/NaturezasOperacaoPage'
+import { VendedoresPage } from './pages/cadastros/VendedoresPage'
 import { PosicaoEstoquePage } from './pages/estoque/PosicaoEstoquePage'
 import { NfEntradaPage } from './pages/estoque/NfEntradaPage'
 import { OrdensProducaoPage } from './pages/producao/OrdensProducaoPage'
@@ -34,12 +36,14 @@ export default function App() {
           <Route path="cadastros/produtos" element={<ProdutosPage />} />
           <Route path="cadastros/pessoas" element={<PessoasPage />} />
           <Route path="cadastros/categorias" element={<CategoriasPage />} />
+          <Route path="cadastros/vendedores" element={<VendedoresPage />} />
           <Route path="estoque/posicao" element={<PosicaoEstoquePage />} />
           <Route path="estoque/nf-entrada" element={<NfEntradaPage />} />
           <Route path="estoque/movimentacoes" element={<Navigate to="/estoque/posicao" replace />} />
           <Route path="producao/fichas" element={<Navigate to="/producao/ordens" replace />} />
           <Route path="producao/ordens" element={<OrdensProducaoPage />} />
           <Route path="vendas/pedidos" element={<PedidosVendaPage />} />
+          <Route path="vendas/naturezas" element={<NaturezasOperacaoPage />} />
           <Route path="fiscal/nfe" element={<NotasFiscaisPage />} />
           <Route path="financeiro/contas" element={<PlanoContasPage />} />
           <Route path="financeiro/importar" element={<Navigate to="/financeiro/conciliacao" replace />} />

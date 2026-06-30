@@ -23,6 +23,7 @@ const navItems: NavItem[] = [
     children: [
       { label: 'Produtos & Insumos', href: '/cadastros/produtos' },
       { label: 'Clientes & Fornecedores', href: '/cadastros/pessoas' },
+      { label: 'Vendedores', href: '/cadastros/vendedores' },
       { label: 'Categorias', href: '/cadastros/categorias' },
       { label: 'Plano de Contas', href: '/financeiro/contas' },
       { label: 'Contas Bancárias', href: '/financeiro/contas-bancarias' },
@@ -48,6 +49,7 @@ const navItems: NavItem[] = [
     icon: <ShoppingCart size={18} />,
     children: [
       { label: 'Pedidos', href: '/vendas/pedidos' },
+      { label: 'Naturezas de Operação', href: '/vendas/naturezas' },
     ],
   },
   {

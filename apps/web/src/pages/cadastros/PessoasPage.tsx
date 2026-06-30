@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../lib/api'
-import { Plus, Users, Pencil, PowerOff, Power, ArrowLeft } from 'lucide-react'
+import { Plus, Users, Pencil, PowerOff, Power, ArrowLeft, AlertTriangle } from 'lucide-react'
 import clsx from 'clsx'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { useForm, Controller } from 'react-hook-form'
@@ -84,8 +84,51 @@ function PessoaForm({
   const queryClient = useQueryClient()
   const isEditing = !!initialData
   const [aba, setAba] = useState<'geral' | 'fiscal'>('geral')
+  const [docDuplicado, setDocDuplicado] = useState<{ codigo: string; nome: string } | null>(null)
 
-  const { register, handleSubmit, watch, control, formState: { errors } } = useForm<FormData>({
+  const [buscandoCnpj, setBuscandoCnpj] = useState(false)
+  const [cnpjErro, setCnpjErro] = useState('')
+
+  async function verificarDocumento(valor: string) {
+    const doc = valor.replace(/\D/g, '')
+    if (!doc) { setDocDuplicado(null); return }
+    try {
+      const { data } = await api.get('/pessoas/por-documento', { params: { documento: doc } })
+      setDocDuplicado(data.pessoa && data.pessoa.id !== initialData?.id
+        ? { codigo: data.pessoa.codigo, nome: data.pessoa.nome } : null)
+    } catch { setDocDuplicado(null) }
+  }
+
+  // Preenche o endereço pelo CEP (ViaCEP via backend)
+  async function buscarEndereco(valor: string) {
+    const cep = valor.replace(/\D/g, '')
+    if (cep.length !== 8) return
+    try {
+      const { data } = await api.get(`/lookup/cep/${cep}`)
+      const set = (k: keyof FormData, v?: string) => v && setValue(k, v as never)
+      set('logradouro', data.logradouro); set('bairro', data.bairro)
+      set('municipio', data.municipio); set('uf', data.uf); set('codigoIBGE', data.codigoIBGE)
+    } catch { /* CEP não encontrado — ignora */ }
+  }
+
+  // Preenche razão social, fantasia e endereço pelo CNPJ (BrasilAPI via backend)
+  async function buscarCnpj() {
+    const doc = (watch('documento') ?? '').replace(/\D/g, '')
+    if (doc.length !== 14) { setCnpjErro('Informe um CNPJ com 14 dígitos.'); return }
+    setBuscandoCnpj(true); setCnpjErro('')
+    try {
+      const { data } = await api.get(`/lookup/cnpj/${doc}`)
+      const set = (k: keyof FormData, v?: string) => v && setValue(k, v as never)
+      set('nome', data.razaoSocial); set('nomeFantasia', data.nomeFantasia)
+      set('cep', data.cep); set('logradouro', data.logradouro); set('numero', data.numero)
+      set('complemento', data.complemento); set('bairro', data.bairro)
+      set('municipio', data.municipio); set('uf', data.uf); set('codigoIBGE', data.codigoIBGE)
+    } catch (e) {
+      setCnpjErro((e as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Falha ao consultar o CNPJ.')
+    } finally { setBuscandoCnpj(false) }
+  }
+
+  const { register, handleSubmit, watch, control, setValue, formState: { errors } } = useForm<FormData>({
     resolver: zodResolver(schema),
     defaultValues: initialData
       ? {
@@ -158,12 +201,35 @@ function PessoaForm({
           </FormField>
 
           <div className="grid grid-cols-2 gap-4">
-            <FormField label="Papel" error={errors.tipo?.message} required>
-              <Select {...register('tipo')}>
-                <option value="CLIENTE">Cliente</option>
-                <option value="FORNECEDOR">Fornecedor</option>
-                <option value="AMBOS">Cliente + Fornecedor</option>
-              </Select>
+            <FormField label="Papel" error={errors.tipo?.message} required hint="Marque um ou ambos">
+              <div className="flex gap-5 pt-2">
+                <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={tipo === 'CLIENTE' || tipo === 'AMBOS'}
+                    onChange={e => {
+                      const cli = e.target.checked
+                      const forn = tipo === 'FORNECEDOR' || tipo === 'AMBOS'
+                      setValue('tipo', cli && forn ? 'AMBOS' : forn ? 'FORNECEDOR' : 'CLIENTE', { shouldValidate: true })
+                    }}
+                    className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                  />
+                  Cliente
+                </label>
+                <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={tipo === 'FORNECEDOR' || tipo === 'AMBOS'}
+                    onChange={e => {
+                      const forn = e.target.checked
+                      const cli = tipo === 'CLIENTE' || tipo === 'AMBOS'
+                      setValue('tipo', cli && forn ? 'AMBOS' : cli ? 'CLIENTE' : 'FORNECEDOR', { shouldValidate: true })
+                    }}
+                    className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                  />
+                  Fornecedor
+                </label>
+              </div>
             </FormField>
             <FormField label="Tipo de Pessoa" error={errors.tipoLegal?.message} required>
               <Select {...register('tipoLegal')}>
@@ -195,10 +261,30 @@ function PessoaForm({
             label={tipoLegal === 'PJ' ? 'CNPJ' : 'CPF'}
             error={errors.documento?.message}
           >
-            <Input
-              {...register('documento')}
-              placeholder={tipoLegal === 'PJ' ? '00.000.000/0001-00' : '000.000.000-00'}
-            />
+            {(() => {
+              const docReg = register('documento')
+              return (
+                <div className="flex gap-2">
+                  <Input
+                    {...docReg}
+                    onBlur={e => { docReg.onBlur(e); verificarDocumento(e.target.value) }}
+                    placeholder={tipoLegal === 'PJ' ? '00.000.000/0001-00' : '000.000.000-00'}
+                  />
+                  {tipoLegal === 'PJ' && (
+                    <Button type="button" variant="secondary" onClick={buscarCnpj} loading={buscandoCnpj}>
+                      Buscar
+                    </Button>
+                  )}
+                </div>
+              )
+            })()}
+            {cnpjErro && <p className="mt-1 text-xs text-red-600">{cnpjErro}</p>}
+            {docDuplicado && (
+              <p className="mt-1 flex items-center gap-1.5 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">
+                <AlertTriangle size={13} />
+                Já existe um cadastro com este CPF/CNPJ: <strong>{docDuplicado.codigo} — {docDuplicado.nome}</strong>. Edite o existente em vez de criar outro.
+              </p>
+            )}
           </FormField>
 
           <div className="grid grid-cols-2 gap-4">
@@ -240,8 +326,18 @@ function PessoaForm({
           </div>
 
           <div className="grid grid-cols-3 gap-4">
-            <FormField label="CEP" hint="8 dígitos sem traço">
-              <Input {...register('cep')} placeholder="01310100" maxLength={8} />
+            <FormField label="CEP" hint="Autopreenche o endereço">
+              {(() => {
+                const cepReg = register('cep')
+                return (
+                  <Input
+                    {...cepReg}
+                    onBlur={e => { cepReg.onBlur(e); buscarEndereco(e.target.value) }}
+                    placeholder="01310100"
+                    maxLength={9}
+                  />
+                )
+              })()}
             </FormField>
             <div className="col-span-2">
               <FormField label="Logradouro">
@@ -288,7 +384,8 @@ function PessoaForm({
 
       {mutation.isError && (
         <p className="text-sm text-red-600 bg-red-50 border border-red-200 px-3 py-2 rounded-lg">
-          Erro ao salvar. Verifique os dados e tente novamente.
+          {(mutation.error as { response?: { data?: { error?: string } } })?.response?.data?.error
+            ?? 'Erro ao salvar. Verifique os dados e tente novamente.'}
         </p>
       )}
 

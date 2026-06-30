@@ -77,7 +77,7 @@ export function ConfigFiscalPage() {
 // ─── Tab Empresa ─────────────────────────────────────────────────────────────
 
 function TabEmpresa({ empresa, onSave }: { empresa: Record<string, unknown> | null; onSave: () => void }) {
-  const { register, handleSubmit, reset, formState: { errors, isDirty } } = useForm({
+  const { register, handleSubmit, reset, watch, setValue, formState: { errors, isDirty } } = useForm({
     defaultValues: {
       razaoSocial: '', nomeFantasia: '', cnpj: '', ie: '', im: '', cnae: '',
       crt: 'SIMPLES_NACIONAL', fone: '', email: '',
@@ -85,6 +85,24 @@ function TabEmpresa({ empresa, onSave }: { empresa: Record<string, unknown> | nu
   })
 
   useEffect(() => { if (empresa) reset(empresa as never) }, [empresa, reset])
+
+  const [buscandoCnpj, setBuscandoCnpj] = useState(false)
+  const [cnpjErro, setCnpjErro] = useState('')
+
+  // Preenche razão social, fantasia, fone e e-mail pelo CNPJ (BrasilAPI via backend)
+  async function buscarCnpj() {
+    const doc = (watch('cnpj') ?? '').replace(/\D/g, '')
+    if (doc.length !== 14) { setCnpjErro('Informe um CNPJ com 14 dígitos.'); return }
+    setBuscandoCnpj(true); setCnpjErro('')
+    try {
+      const { data } = await api.get(`/lookup/cnpj/${doc}`)
+      const set = (k: string, v?: string) => v && setValue(k as never, v as never, { shouldDirty: true })
+      set('razaoSocial', data.razaoSocial); set('nomeFantasia', data.nomeFantasia)
+      set('fone', data.telefone); set('email', data.email)
+    } catch (e) {
+      setCnpjErro((e as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Falha ao consultar o CNPJ.')
+    } finally { setBuscandoCnpj(false) }
+  }
 
   const mutation = useMutation({
     mutationFn: (data: Record<string, unknown>) => api.put('/fiscal/empresa', data),
@@ -103,8 +121,11 @@ function TabEmpresa({ empresa, onSave }: { empresa: Record<string, unknown> | nu
       </div>
 
       <div className="grid grid-cols-3 gap-4">
-        <FormField label="CNPJ" required hint="Somente números">
-          <Input {...register('cnpj', { required: true })} placeholder="12345678000195" maxLength={14} />
+        <FormField label="CNPJ" required hint={cnpjErro || 'Clique em Buscar para puxar da Receita'}>
+          <div className="flex gap-2">
+            <Input {...register('cnpj', { required: true })} placeholder="12345678000195" maxLength={14} />
+            <Button type="button" variant="secondary" onClick={buscarCnpj} loading={buscandoCnpj}>Buscar</Button>
+          </div>
         </FormField>
         <FormField label="Inscrição Estadual (IE)">
           <Input {...register('ie')} placeholder="Somente números" />
@@ -144,7 +165,7 @@ function TabEmpresa({ empresa, onSave }: { empresa: Record<string, unknown> | nu
 // ─── Tab Endereço ─────────────────────────────────────────────────────────────
 
 function TabEndereco({ empresa, onSave }: { empresa: Record<string, unknown> | null; onSave: () => void }) {
-  const { register, handleSubmit, reset, formState: { isDirty } } = useForm({
+  const { register, handleSubmit, reset, setValue, formState: { isDirty } } = useForm({
     defaultValues: {
       cep: '', logradouro: '', numero: '', complemento: '',
       bairro: '', municipio: '', uf: '', codigoIBGE: '',
@@ -152,6 +173,18 @@ function TabEndereco({ empresa, onSave }: { empresa: Record<string, unknown> | n
   })
 
   useEffect(() => { if (empresa) reset(empresa as never) }, [empresa, reset])
+
+  // Autopreenche o endereço pelo CEP (ViaCEP via backend)
+  async function buscarEndereco(valor: string) {
+    const cep = valor.replace(/\D/g, '')
+    if (cep.length !== 8) return
+    try {
+      const { data } = await api.get(`/lookup/cep/${cep}`)
+      const set = (k: string, v?: string) => v && setValue(k as never, v as never, { shouldDirty: true })
+      set('logradouro', data.logradouro); set('bairro', data.bairro)
+      set('municipio', data.municipio); set('uf', data.uf); set('codigoIBGE', data.codigoIBGE)
+    } catch { /* CEP não encontrado — ignora */ }
+  }
 
   const mutation = useMutation({
     mutationFn: (data: Record<string, unknown>) => api.put('/fiscal/empresa', data),
@@ -165,8 +198,18 @@ function TabEndereco({ empresa, onSave }: { empresa: Record<string, unknown> | n
       </div>
 
       <div className="grid grid-cols-3 gap-4">
-        <FormField label="CEP" hint="Somente números">
-          <Input {...register('cep')} placeholder="01310100" maxLength={8} />
+        <FormField label="CEP" hint="Autopreenche o endereço">
+          {(() => {
+            const cepReg = register('cep')
+            return (
+              <Input
+                {...cepReg}
+                onBlur={e => { cepReg.onBlur(e); buscarEndereco(e.target.value) }}
+                placeholder="01310100"
+                maxLength={9}
+              />
+            )
+          })()}
         </FormField>
         <div className="col-span-2">
           <FormField label="Logradouro">

@@ -3,7 +3,7 @@ import { prisma } from '@erp/database'
 import { z } from 'zod'
 import { CriarProdutoSchema, AtualizarProdutoSchema } from '@erp/shared'
 import { requirePerfil } from '../../plugins/auth.plugin.js'
-import { calcularCustoBom, propagarCustoComponente } from './custo-bom.service.js'
+import { calcularCustoBom } from './custo-bom.service.js'
 
 const UNIDADES = ['KG', 'G', 'L', 'ML', 'UN', 'CX', 'PCT'] as const
 
@@ -118,12 +118,11 @@ export async function produtosRoutes(app: FastifyInstance) {
       )
       await tx.produto.update({ where: { id }, data: { aprovisionamento: 'FABRICADO', custoUnitario } })
 
+      // Custo teórico inicial do fabricado (semente). A partir daqui, o custo só muda
+      // na produção (custo real do lote) — não há mais cascata por mudança de componente.
       await tx.produtoCusto.create({
-        data: { produtoId: id, custo: custoUnitario, motivo: 'BOM', observacao: 'Recálculo por BOM' },
+        data: { produtoId: id, custo: custoUnitario, motivo: 'BOM', observacao: 'Custo teórico inicial da composição' },
       })
-
-      // Este produto pode ser componente de outros BOMs → propaga em cascata
-      await propagarCustoComponente(tx, id)
 
       return nova
     })
@@ -205,8 +204,6 @@ export async function produtosRoutes(app: FastifyInstance) {
         await tx.produtoCusto.create({
           data: { produtoId: id, custo: Number(data.custoUnitario), motivo: 'MANUAL', observacao: 'Edição manual no cadastro' },
         })
-        // Propaga para os produtos com BOM que usam este como componente
-        await propagarCustoComponente(tx, id)
       }
       return atualizado
     })
@@ -250,9 +247,6 @@ export async function produtosRoutes(app: FastifyInstance) {
         where: { id },
         data: { custoUnitario: custo, custoMedio: custo, ultimoCusto: custo },
       })
-
-      // Propaga o novo custo para produtos com BOM que usam este como componente
-      await propagarCustoComponente(tx, id)
 
       return { custoAtual: custo }
     })

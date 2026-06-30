@@ -6,6 +6,8 @@ import {
   cancelarNotaFiscal,
   consultarStatusNFe,
   criarNFeDePedido,
+  transmitirNotaFiscal,
+  atualizarNFe,
   getUrlDanfe,
   getUrlXml,
 } from './fiscal.service.js'
@@ -91,6 +93,7 @@ export async function fiscalRoutes(app: FastifyInstance) {
       include: {
         itens: { select: { id: true, xProd: true, qCom: true, vProd: true } },
         eventos: { orderBy: { criadoEm: 'desc' }, take: 1 },
+        pedidoVenda: { select: { estoqueElancado: true, financeiroLancado: true, numero: true } },
       },
       orderBy: { dataEmissao: 'desc' },
       take: 100,
@@ -124,7 +127,11 @@ export async function fiscalRoutes(app: FastifyInstance) {
     const { id } = request.params as { id: string }
     const nota = await prisma.notaFiscal.findUnique({
       where: { id },
-      include: { itens: true, eventos: { orderBy: { criadoEm: 'desc' } } },
+      include: {
+        itens: true,
+        eventos: { orderBy: { criadoEm: 'desc' } },
+        pedidoVenda: { select: { estoqueElancado: true, financeiroLancado: true, numero: true } },
+      },
     })
     if (!nota) return reply.code(404).send({ error: 'Nota fiscal não encontrada.' })
     return nota
@@ -213,8 +220,7 @@ export async function fiscalRoutes(app: FastifyInstance) {
       },
     })
 
-    const notaEmitida = await emitirNotaFiscal(nota.id)
-    return reply.code(201).send(notaEmitida)
+    return reply.code(201).send(nota)
   })
 
   // Emitir NF-e a partir de PedidoVenda
@@ -226,6 +232,28 @@ export async function fiscalRoutes(app: FastifyInstance) {
     try {
       const nota = await criarNFeDePedido(pedidoId, { naturezaOperacao, infCpl })
       return reply.code(201).send(nota)
+    } catch (err) {
+      return reply.code(400).send({ error: String(err instanceof Error ? err.message : err) })
+    }
+  })
+
+  // Editar NF-e PENDENTE
+  app.put('/nfe/:id', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    try {
+      const nota = await atualizarNFe(id, request.body as never)
+      return nota
+    } catch (err) {
+      return reply.code(400).send({ error: String(err instanceof Error ? err.message : err) })
+    }
+  })
+
+  // Transmitir NF-e PENDENTE à SEFAZ (lança estoque/financeiro do pedido se ainda não feito)
+  app.post('/nfe/:id/transmitir', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    try {
+      const nota = await transmitirNotaFiscal(id)
+      return nota
     } catch (err) {
       return reply.code(400).send({ error: String(err instanceof Error ? err.message : err) })
     }
